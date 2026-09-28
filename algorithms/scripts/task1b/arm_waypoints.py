@@ -21,12 +21,9 @@
 # Team ID:          1454
 # Author List:		Aryan Joshi
 # Filename:		    arm_waypoints.py
-# Functions:
-#			        [ Comma separated list of functions in this file ]
-# Nodes:		    Add your publishing and subscribing node
-#                   Example:
-#			        Publishing Topics  - [ /delta_twist_cmds, /delta_joint_cmds ]
-#                   Subscribing Topics - [ /tcp_pose_raw, /joint_states, /etc... ]
+# Functions:		tcpposecb, jointstatecb, armstatuscb, switch_controller, publish_zero_twist, process_waypoints, main
+# Nodes:		     Publishing Topics  - [ /delta_twist_cmds, /delta_joint_cmds ]
+#                   Subscribing Topics - [ /tcp_pose_raw, /joint_states, /arm_status ]
 
 
 ################### IMPORT MODULES #######################
