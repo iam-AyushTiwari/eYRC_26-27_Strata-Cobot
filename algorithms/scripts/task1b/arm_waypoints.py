@@ -37,7 +37,8 @@ from controller_manager_msgs.srv import SwitchController
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Int32
-
+from scipy.spatial.transform import Rotation
+import numpy as np
 
 ##################### TASK CONSTANTS #######################
 
@@ -139,10 +140,10 @@ class arm_waypoints(Node):
         self.is_holding = False 
         self.hold_start_time = None
         self.hold_duration = 2.0
-        self.distance_tolerance = 0.015 #15mm tolernaace allowed
+        self.distance_tolerance = 0.020 #20mm tolernaace allowed
 
         #proportional controler gains 
-        self.kp_linear = 1.2
+        self.kp_linear = 0.9 if self.current_wp_idx == 1 else 1.2
         self.kp_angular = 1.0
         #orientation lock for the wrist
         self.target_orientation = None 
@@ -334,95 +335,105 @@ class arm_waypoints(Node):
         #   ->  Track which waypoint you are on, and log the distance to it while developing.
 
         ############################################
-        if not self.controller_active:
-            if self.switch_future is None:
-                self.switch_controller(twist_controller)
-            elif self.switch_future.done():
-                res = self.switch_future.result()
-                if res and res.ok:
-                    self.controller_active = True
-                    self.get_logger().info('delta_twist_controller successfully activated.')
-            return
-        # wait until all initail sensor message arrive 
+        # Heartbeat check : Return early and publish zero twist until all data has arrived 
         if self.tcp_pose is None or self.joint_angles is None or self.arm_status is None:
+            self.publish_zero_twist()
             return
-            
-        #check if all waypoints have been completed
+        #check if all waypoints are completed 
         if self.current_wp_idx >= len(self.target_waypoints):
             self.publish_zero_twist()
             return
-    
-        #position error and waypoint hold state Machine 
-        current_pose = self.tcp_pose.position
-        tx, ty, tz = self.target_waypoints[self.current_wp_idx]
-
-        #position error calculation
-        #error in x y and z position 
-        err_x = tx - current_pose.x
-        err_y = ty - current_pose.y
-        err_z = tz - current_pose.z
         
-        distance = math.sqrt(err_x**2 + err_y**2 + err_z**2)
+        # extract position and target
+        current_pos = np.array([self.tcp_pose.position.x, self.tcp_pose.position.y, self.tcp_pose.position.z])
+        target_pos = np.array(self.target_waypoints[self.current_wp_idx])
+
+        # position error vector and distance 
+        error_pos = target_pos - current_pos 
+        distance = np.linalg.norm(error_pos)
+
+        #logging distance while developing
+        self.get_logger().info(
+            f"WP {self.current_wp_idx + 1}/{len(self.target_waypoints)} | Distance: {distance:.4f} m", 
+            throttle_duration_sec=0.5
+        )
+
         now = self.get_clock().now()
-        #check waypoint arrival with arm_status
+
+        #waypoint state machiene and holding logic 
         if distance <= self.distance_tolerance:
             if not self.is_holding:
-                self.is_holding = True
+                self.is_holding = True 
                 self.hold_start_time = now
-                self.get_logger().info(f"Reached waypoints {self.current_wp_idx + 1}, holding...")
+                self.get_logger().info(f"Reached waypoint {self.current_wp_idx + 1} holding for {self.hold_duration} seconds")
 
-            elasped = (now - self.hold_start_time).nanoseconds / 1e9
-        
+            elasped = (now - self.hold_start_time).nanoseconds / 1e9 # convert to seconds 
+
             if elasped >= self.hold_duration:
-                self.get_logger().info(f"Waypoint {self.current_wp_idx + 1} hold completed. Moving to next waypoint...")
+                self.is_holding = False 
                 self.current_wp_idx += 1
-                self.is_holding = False
-                self.hold_start_time = None
-
-            #active hold command 
+                self.get_logger().info(f"Finished holding at waypoint {self.current_wp_idx + 1}")
             self.publish_zero_twist()
-            return
+            return 
 
-        else: 
-            #reset hold state if displace outside tolerance
-            self.is_holding = False
-            self.hold_start_time = None
-            
-        #proportionel vels
-        vx = self.kp_linear * err_x
-        vy = self.kp_linear * err_y
-        vz = self.kp_linear * err_z
-            
-        #scale whole vector to stay under cap_linear_speed (0.15 m/s)
-        speed = math.sqrt(vx**2 + vy**2 + vz**2)
-        max_linear = cap_linear_mps*0.95 #5% safty margin
+        # reset holding flag if moved out of tolerance 
+        self.is_holding = False
 
-        if speed > max_linear:
-            scale_factor = max_linear / speed
-            vx *= scale_factor
-            vy *= scale_factor
-            vz *= scale_factor
+        #calculate the linear velocity component using a PD controller 
+        Kp_lin = 1.2
+        v_lin = Kp_lin * error_pos 
+        v_mag = np.linalg.norm(v_lin)
 
-         # orientation stabilization
-        # 6. Publish Twist Command
-        msg = TwistStamped()
-        msg.header.stamp = now.to_msg()
-        msg.header.frame_id = base_frame
-        msg.twist.linear.x = vx
-        msg.twist.linear.y = vy
-        msg.twist.linear.z = vz
-        msg.twist.angular.x = 0.0
-        msg.twist.angular.y = 0.0
-        msg.twist.angular.z = 0.0
-        self.twist_pub.publish(msg)
-            
-            
-                
-            
+        #Scale whole vector using cap_linear_mps with 2% safety margin (0.147 m/s)
+        max_cap = cap_linear_mps * 0.98
 
+        if v_mag > max_cap: 
+            v_lin = v_lin * (max_cap/v_mag)
 
+        #Calculate the angular velocity using Tool Axis alignment logic 
+        # a_tcp is the tool's own z axis 
+        q = [self.tcp_pose.orientation.x, self.tcp_pose.orientation.y, self.tcp_pose.orientation.z, self.tcp_pose.orientation.w]
 
+        R_tcp = Rotation.from_quat(q).as_matrix()
 
+        # Extract tool axes from the rotation matrix 
+        a_tcp = R_tcp[:, 2] # Z axis 
+
+        # b_tcp is the target tool vector (aligning tool axis along direction of motion to prevent wrist locks)
+        b_tcp = error_pos / distance if distance > 1e-4 else a_tcp
+
+        #Alignment cross product and dot product 
+        c = np.cross(a_tcp, b_tcp)
+        c_norm = np.linalg.norm(c)
+        dot_a_tcp_b_tcp = np.dot(a_tcp, b_tcp)
+
+        kp_ang = 0.8
+        if c_norm > 1e-6:
+            e = (c / c_norm) * math.atan2(c_norm, dot_a_tcp_b_tcp)
+            omega = kp_ang * e
+        else:
+            #If vectors are aligned (near zero cross product)
+            omega = np.zeros(3)
+        
+        # Cap angular velocity magnitude for smoothness
+        omega_mag = np.linalg.norm(omega)
+        max_ang_cap = 0.5  # rad/s
+        if omega_mag > max_ang_cap:
+            omega = omega * (max_ang_cap / omega_mag)
+
+        #Construct and publish TwistStamped message
+        twist_msg = TwistStamped()
+        twist_msg.header.stamp = self.get_clock().now().to_msg()
+        twist_msg.header.frame_id = base_frame
+        twist_msg.twist.linear.x = v_lin[0]
+        twist_msg.twist.linear.y = v_lin[1]
+        twist_msg.twist.linear.z = v_lin[2]
+        twist_msg.twist.angular.x = omega[0]
+        twist_msg.twist.angular.y = omega[1]
+        twist_msg.twist.angular.z = omega[2]
+
+        self.twist_pub.publish(twist_msg)
+    
 ##################### FUNCTION DEFINITION #######################
 
 def main():
