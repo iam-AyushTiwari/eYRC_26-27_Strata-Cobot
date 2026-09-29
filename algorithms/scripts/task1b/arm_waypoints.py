@@ -137,14 +137,6 @@ class arm_waypoints(Node):
         self.joint_angles = None                                                        # joint feedback variable (from jointstatecb())
         self.arm_status = None                                                          # arm state code variable (from armstatuscb())
 
-        ############ ADD YOUR CODE HERE ############
-
-        # INSTRUCTIONS & HELP :
-
-        #	->  Add any variable your motion needs to keep between cycles.
-        #       ->  HINT: Which waypoint you are on, and what the arm is doing about it.
-
-        ############################################
         # waypoint targets
         self.target_waypoints = waypoints  # Variable to store target waypoints
         self.current_wp_idx = 0 #waypoint index for current waypoint
@@ -179,15 +171,6 @@ class arm_waypoints(Node):
         Returns:
         '''
 
-        ############ ADD YOUR CODE HERE ############
-
-        # INSTRUCTIONS & HELP :
-
-        #	->  Store the tool's position and orientation.
-        #       ->  HINT: data.pose.position, data.pose.orientation
-
-        ############################################
-
         #store tool position and orientation
         self.tcp_pose = data.pose
 
@@ -202,16 +185,6 @@ class arm_waypoints(Node):
         Returns:
         '''
 
-        ############ ADD YOUR CODE HERE ############
-
-        # INSTRUCTIONS & HELP :
-
-        #	->  Store the joint angles, matched BY NAME - the order is not promised.
-        #       ->  HINT: angles = [data.position[data.name.index(j)] for j in joint_names]
-        #       ->  NOTE: A joint assumed to be at zero when it is not reads as a large
-        #                 error, and a controller acting on it drives hard towards it.
-
-        ############################################
         if all(name in data.name for name in joint_names):
             self.joint_angles = [data.position[data.name.index(j)] for j in joint_names]
 
@@ -226,17 +199,6 @@ class arm_waypoints(Node):
 
         Returns:
         '''
-
-        ############ ADD YOUR CODE HERE ############
-
-        # INSTRUCTIONS & HELP :
-
-        #	->  Store the code, and log it while you are developing. Zero is healthy; anything
-        #       else is the arm telling you about the last command or its own state.
-        #       ->  HINT: /arm_status_detail says the same thing in words.
-        #       ->  NOTE: A protective stop LATCHES and cannot be cleared - the run is over.
-
-        ############################################
 
         self.arm_status = data.data #store arm status
 
@@ -254,28 +216,6 @@ class arm_waypoints(Node):
             success     (bool):     Whether the controller was activated
         '''
 
-        ############ ADD YOUR CODE HERE ############
-
-        # INSTRUCTIONS & HELP :
-
-        #	->  Call the switch_controller service on self.switch_cli-
-        #           req = SwitchController.Request()
-        #           req.activate_controllers = [ the one you want ]
-        #           req.deactivate_controllers = [ the other one ]
-        #           req.strictness = SwitchController.Request.STRICT
-
-        #   ->  Wait for it first, and expect the first attempt to fail-
-        #           self.switch_cli.wait_for_service(timeout_sec=20.0)
-        #           future = self.switch_cli.call_async(req)
-        #           rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
-        #       ->  NOTE: That last call HANGS if made from a callback of a node that is
-        #                 already spinning. __init__ is safe; from the timer, poll
-        #                 'future.done()' instead.
-
-        #   ->  Do not switch more often than you need to.
-
-        ############################################
-
         # activating and deactivating controllers
         req = SwitchController.Request() #create request for controller switching
         req.activate_controllers = [controller]  # activate required controller 
@@ -292,13 +232,11 @@ class arm_waypoints(Node):
         return True
 
     def publish_zero_twist(self):
-        """
+        '''
         Description:    Publish zero twist commands to the arm to prevent coasting and satisfy the command timeout.
         Args:
-            None
         Returns:
-            None
-        """
+        '''
         
         #create zero twist message
         msg = TwistStamped()                                    #create twist stamped message
@@ -313,13 +251,11 @@ class arm_waypoints(Node):
         self.twist_pub.publish(msg)                             #publish the zero twist message
 
     def publish_zero_joint(self):
-        """
+        '''
         Description:    Publish zero joint velocities to the arm to prevent coasting and satisfy the command timeout.
         Args:
-            None
         Returns:
-            None
-        """
+        '''
 
         #create zero joint velocity message
         msg = JointJog()                                        #create joint jog message
@@ -329,13 +265,11 @@ class arm_waypoints(Node):
         self.joint_pub.publish(msg)                             #publish the zero joint velocity message
 
     def run_unfold(self):
-        """
+        '''
         Description:    Drive the joints toward unfold_targets using switch_controller.
         Args:
-            None
         Returns:
-            None
-        """
+        '''
 
         #check if the active controller is the joint controller
         if self.active_controller != joint_controller:
@@ -377,13 +311,11 @@ class arm_waypoints(Node):
         self.joint_pub.publish(msg)
 
     def run_tracking(self):
-        """
+        '''
         Description:    Drive the arm towards the target waypoints using switch_controller.
         Args:
-            None
         Returns:
-            None
-        """
+        '''
         
         #check if the active controller is the twist controller
         if self.active_controller != twist_controller:
@@ -411,8 +343,11 @@ class arm_waypoints(Node):
 
         #calculate the error between the current position and the target position
         current_pos = np.array([self.tcp_pose.position.x, self.tcp_pose.position.y, self.tcp_pose.position.z])
+        
         target_pos = np.array(self.target_waypoints[self.current_wp_idx]) #get the target position
+
         error_pos = target_pos - current_pos # error position variable
+
         #calculate the distance between the current position and the target position
         distance = np.linalg.norm(error_pos) 
 
@@ -441,33 +376,36 @@ class arm_waypoints(Node):
             self.publish_zero_twist()
             return
 
-        self.is_holding = False # reset the holding flag
+        self.is_holding = False                 # reset the holding flag
 
         #check if the current waypoint is the first waypoint
         Kp_lin = 0.9 if self.current_wp_idx == 0 else self.kp_linear
         
-        v_lin = Kp_lin * error_pos #linear velocity
-        v_mag = np.linalg.norm(v_lin) #magnitude of linear velocity
-        max_cap = cap_linear_mps * 0.98 #maximum linear velocity
+        v_lin = Kp_lin * error_pos              #linear velocity
+        v_mag = np.linalg.norm(v_lin)           #magnitude of linear velocity
+        max_cap = cap_linear_mps * 0.98         #maximum linear velocity
 
         #cap the linear velocity
         if v_mag > max_cap:
             v_lin = v_lin * (max_cap / v_mag)
 
-        q_curr = [self.tcp_pose.orientation.x, self.tcp_pose.orientation.y, self.tcp_pose.orientation.z, self.tcp_pose.orientation.w] #quaternion of the current orientation    
-        R_curr = Rotation.from_quat(q_curr).as_matrix()
-        a_curr = R_curr[:, 2] # z-axis of the current orientation
+        q_curr = [self.tcp_pose.orientation.x, self.tcp_pose.orientation.y, self.tcp_pose.orientation.z, self.tcp_pose.orientation.w]  #quaternion of the current orientation    
+
+        R_curr = Rotation.from_quat(q_curr).as_matrix() # current rotation matrix
+        a_curr = R_curr[:, 2]                           # z-axis of the current orientation
 
         q_target = [self.target_orientation.x, self.target_orientation.y, self.target_orientation.z, self.target_orientation.w] #quaternion of the target orientation
-        R_target = Rotation.from_quat(q_target).as_matrix() # matrix of the target orientation
+
+        R_target = Rotation.from_quat(q_target).as_matrix() # target rotation matrix
         b_target = R_target[:, 2] # z-axis of the target orientation
 
-        c = np.cross(a_curr, b_target) #cross product of the current and target z-axes
-        c_norm = np.linalg.norm(c) #magnitude of the cross product
+        cross_product = np.cross(a_curr, b_target) #cross product of the current and target z-axes
+
+        c_norm = np.linalg.norm(cross_product) #magnitude of the cross product
         dot_a_b = np.dot(a_curr, b_target) #dot product of the current and target z-axes
 
         if c_norm > 1e-6:
-            e = (c / c_norm) * math.atan2(c_norm, dot_a_b) #angular error
+            e = (cross_product / c_norm) * math.atan2(c_norm, dot_a_b) #angular error
             omega = self.kp_angular * e
         else:
             omega = np.zeros(3)
@@ -482,12 +420,15 @@ class arm_waypoints(Node):
         twist_msg = TwistStamped() #create a twistStamped message
         twist_msg.header.stamp = self.get_clock().now().to_msg() #header stamp
         twist_msg.header.frame_id = base_frame #frame id
+
         twist_msg.twist.linear.x = float(v_lin[0]) #linear velocity x-component
         twist_msg.twist.linear.y = float(v_lin[1]) #linear velocity y-component
         twist_msg.twist.linear.z = float(v_lin[2]) #linear velocity z-component
+
         twist_msg.twist.angular.x = float(omega[0]) #angular velocity x-component
         twist_msg.twist.angular.y = float(omega[1]) #angular velocity y-component
         twist_msg.twist.angular.z = float(omega[2]) #angular velocity z-component
+
         self.twist_pub.publish(twist_msg) #publish the twist message 
         
     def process_waypoints(self):
@@ -497,48 +438,6 @@ class arm_waypoints(Node):
         Args:
         Returns:
         '''
-
-        ############ ADD YOUR CODE HERE ############
-
-        # INSTRUCTIONS & HELP :
-
-        #	->  Return early until pose, joints and status have all arrived.
-
-        #   ->  Both topics carry VELOCITIES, never positions.
-
-        #   ->  Build the message for whichever interface you made active:
-        #           TwistStamped on self.twist_pub  - linear and angular velocity, in 'base_frame'
-        #           JointJog on self.joint_pub      - 'joint_names' and a velocity for each
-        #       ->  HINT: msg.header.stamp = self.get_clock().now().to_msg()      (both)
-        #                 msg.header.frame_id = base_frame                        (twist)
-        #                 msg.twist.linear.x/.y/.z, msg.twist.angular.x/.y/.z     (twist)
-        #                 msg.joint_names = joint_names, msg.velocities = [...]   (jog)
-
-        #   ->  Publish on EVERY tick, zero included - see 'command_timeout_s'. Never sleep
-        #       inside this function.
-
-        #   ->  Drive the tool at a velocity proportional to the error-
-        #           v = Kp * (target - current)
-        #       ->  HINT: Cap it by scaling the WHOLE vector: v = v * (cap / |v|)
-        #       ->  NOTE: The servo ramps down rather than stopping dead, so the arm settles
-        #                 PAST the pose that satisfied you.
-
-        #   ->  Command the tool's ORIENTATION too, or the servo decides the wrist for you.
-        #       ->  HINT: The turn from unit vector 'a' onto unit vector 'b', as an axis
-        #                 times an angle-
-        #                     c     = cross(a, b)
-        #                     e     = c / |c| * atan2(|c|, dot(a, b))
-        #                     omega = Kp * e
-        #                 'a' is the tool's own axis - a column of
-        #                 Rotation.from_quat([x, y, z, w]).as_matrix().
-
-        #   ->  Think about the PATH. The arm has joint limits and configurations it cannot
-        #       pass through.
-
-        #   ->  Track which waypoint you are on, and log the distance to it while developing.
-
-        ############################################
-
 
         # Heartbeat check : Return early and publish zero twist until all data has arrived 
         if self.tcp_pose is None or self.joint_angles is None or self.arm_status is None:
