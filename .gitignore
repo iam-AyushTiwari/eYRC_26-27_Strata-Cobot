@@ -23,3 +23,6 @@ result-SC-*
 SC-*-task-*/
 
 .DS_Store
+
+#ignore test folder
+test
