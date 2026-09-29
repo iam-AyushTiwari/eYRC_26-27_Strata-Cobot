@@ -21,8 +21,7 @@
 # Team ID:          1454
 # Author List:      Aryan Joshi
 # Filename:         ore_detector.py
-# Functions:        detect_ores, depthimagecb, colorimagecb, caminfocb, _assign_ore_id,
-#                   _update_ore_position, _broadcast_ores, process_image, main
+# Functions:        detect_ores, main
 # Nodes:            Publishing Topics  - [ /tf ]
 #                   Subscribing Topics - [ /camera/camera/color/image_raw, /camera/camera/aligned_depth_to_color/image_raw, /camera/camera/color/camera_info ]
 
@@ -56,13 +55,16 @@ camera_info_topic = '/camera/camera/color/camera_info'
 # The parent frame every ore transform is published against.
 base_frame = 'base_link'
 
+
+# HSV ranges for different ore types 
 hsv_ranges = {
     'azurite_ore':    ((110, 50, 50), (130, 255, 255)),
     'malachite_ore':  ((50, 50, 50),  (70, 255, 255)),
     'vanadinite_ore': ((5, 50, 50),   (25, 255, 255)),
 }
 
-ORE_HALF_HEIGHT = 0.025
+
+ORE_HALF_HEIGHT = 0.025 # half height of the ore in meters
 
 MIN_ORE_AREA = 100          # contours smaller than this (pixels^2) are not ores
 MATCH_PX = 80               # max pixel jump for a detection to keep its id
@@ -120,11 +122,12 @@ def detect_ores(image):
     ############################################
 
     # blur so single noisy pixels do not survive the threshold, then BGR -> HSV
-    blurred_image = cv2.GaussianBlur(image, (5, 5), 0)
-    hsv_image = cv2.cvtColor(blurred_image, cv2.COLOR_BGR2HSV)
+    blurred_image = cv2.GaussianBlur(image, (5, 5), 0) # blur by 5x5 kernel to reduce noise
+    hsv_image = cv2.cvtColor(blurred_image, cv2.COLOR_BGR2HSV) # Convert BGR to HSV
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)) # Rectangular kernel of 3x3
 
+    # threshold on HSV ranges and then clean and reduce to one center per ore
     for ore_type, (lower, upper) in hsv_ranges.items():
         mask = cv2.inRange(hsv_image,
                            np.array(lower, dtype=np.uint8),
@@ -133,22 +136,23 @@ def detect_ores(image):
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        # only two ores of each type exist: keep the two largest regions, so a
+        # only two ores of each type exist: keeping the two largest regions, so a
         # stray blob can never take an id slot
-        candidates = [c for c in contours if cv2.contourArea(c) > MIN_ORE_AREA]
-        candidates.sort(key=cv2.contourArea, reverse=True)
+        candidates = [c for c in contours if cv2.contourArea(c) > MIN_ORE_AREA] # only contours with area more than threshold are considered
+        candidates.sort(key=cv2.contourArea, reverse=True) # sort the contours in descending order of area
 
+        # keep only the top 2 candidates, to avoid noise
         for cnt in candidates[:2]:
             M = cv2.moments(cnt)
-            if M['m00'] == 0:                    # guard against zero division
+            if M['m00'] == 0: # guard against zero division
                 continue
-            cX = int(M['m10'] / M['m00'])
+            cX = int(M['m10'] / M['m00'])   # center pixel coordinates
             cY = int(M['m01'] / M['m00'])
 
-            center_ore_list.append((cX, cY))
-            ore_type_list.append(ore_type)
+            center_ore_list.append((cX, cY)) # append center pixel coordinates
+            ore_type_list.append(ore_type)   # append ore type
             if contours_out is not None:
-                contours_out.append(cnt)
+                contours_out.append(cnt)     # append contour
 
     ############################################
 
@@ -179,12 +183,13 @@ class ore_tf(Node):
 
         ############ Constructor VARIABLES/OBJECTS ############
 
-        image_processing_rate = 0.2                                                     # rate of time to process image (seconds)
-        self.bridge = CvBridge()                                                        # initialise CvBridge object for image conversion
-        self.tf_buffer = tf2_ros.buffer.Buffer()                                        # buffer time used for listening transforms
+        image_processing_rate = 0.2 # rate of time to process image (seconds)
+        self.bridge = CvBridge()    # initialise CvBridge object for image conversion
+        self.tf_buffer = tf2_ros.buffer.Buffer() # buffer time used for listening transforms
         self.listener = tf2_ros.TransformListener(self.tf_buffer, self)
-        self.br = tf2_ros.TransformBroadcaster(self)                                    # object as transform broadcaster to send transform wrt some frame_id
-        self.timer = self.create_timer(image_processing_rate, self.process_image)       # creating a timer based function which gets called on every 0.2 seconds (as defined by 'image_processing_rate' variable)
+
+        self.br = tf2_ros.TransformBroadcaster(self) # object as transform broadcaster to send transform wrt some frame_id
+        self.timer = self.create_timer(image_processing_rate, self.process_image) # creating a timer based function which gets called on every 0.2 seconds (as defined by 'image_processing_rate' variable)
 
         self.cv_image = None                                                            # colour raw image variable (from colorimagecb())
         self.depth_image = None                                                         # depth image variable (from depthimagecb())
@@ -209,8 +214,8 @@ class ore_tf(Node):
         # Ore samples for storing the base_link positions of each ore
         self.ore_samples = {}
 
-        self.detection_saved = False
-        self.calibration_saved = False
+        self.detection_saved = False # flag to ensure the detection image is saved only once
+        self.calibration_saved = False # flag to ensure the calibration frame is saved only once
 
         ############################################
 
@@ -239,13 +244,15 @@ class ore_tf(Node):
         #       ->  HINT: depth[np.isfinite(depth) & (depth > 0.0)]
 
         ############################################
+
+        # try-except block for CvBridgeError
         try:
-            depth_cv = self.bridge.imgmsg_to_cv2(data, desired_encoding='passthrough')
+            depth_cv = self.bridge.imgmsg_to_cv2(data, desired_encoding='passthrough') # convert ROS Image msg to CV2 image
             # Convert depth to meters (16UC1 is mm -> divide by 1000)
             if depth_cv.dtype == np.uint16:
                 self.depth_image = depth_cv.astype(np.float64) / 1000.0
             else:
-                self.depth_image = depth_cv.astype(np.float64)
+                self.depth_image = depth_cv.astype(np.float64)                                 # store depth image in float64 format
         except CvBridgeError as e:
             self.get_logger().error(f"Depth Image CvBridgeError: {e}")
 
@@ -268,8 +275,10 @@ class ore_tf(Node):
         #       ->  HINT: self.bridge.imgmsg_to_cv2(data, desired_encoding='bgr8')
 
         ############################################
+
+        # try-except block for CvBridgeError
         try:
-            self.cv_image = self.bridge.imgmsg_to_cv2(data, desired_encoding='bgr8')
+            self.cv_image = self.bridge.imgmsg_to_cv2(data, desired_encoding='bgr8')   # convert ROS Image msg to CV2 image
         except CvBridgeError as e:
             self.get_logger().error(f"Color Image CvBridgeError: {e}")
 
@@ -296,12 +305,13 @@ class ore_tf(Node):
         #                     k = [fx, 0, cx, 0, fy, cy, 0, 0, 1]
 
         ############################################
+
         self.cam_info = data
         # Camera intrinsic matrix K = [fx, 0, cx, 0, fy, cy, 0, 0, 1]
-        self.fx = data.k[0]
-        self.cx = data.k[2]
-        self.fy = data.k[4]
-        self.cy = data.k[5]
+        self.fx = data.k[0]   # focal length in x direction
+        self.cx = data.k[2]   # principal point in x direction
+        self.fy = data.k[4]   # focal length in y direction
+        self.cy = data.k[5]   # principal point in y direction
 
         ############################################
 
@@ -320,11 +330,13 @@ class ore_tf(Node):
         Returns:
             1 or 2, or None if the detection cannot be one of the two ores of this type
         '''
-        known = self.ore_registry[ore_type]
-        free = [i for i in range(len(known)) if (ore_type, i + 1) not in used]
 
+        known = self.ore_registry[ore_type] # get known ores of the same type
+        free = [i for i in range(len(known)) if (ore_type, i + 1) not in used] # get free ores of the same type
+
+        # if there are free ores, find the closest one
         if free:
-            best = min(free, key=lambda i: math.hypot(cX - known[i][0], cY - known[i][1]))
+            best = min(free, key=lambda i: math.hypot(cX - known[i][0], cY - known[i][1])) # find the closest ore
             if math.hypot(cX - known[best][0], cY - known[best][1]) <= MATCH_PX:
                 known[best] = (cX, cY)
                 return best + 1
@@ -343,25 +355,27 @@ class ore_tf(Node):
 
         Returns: None (leaves the samples untouched when there is no valid depth)
         '''
-        rows, cols = self.depth_image.shape[:2]
+
+        rows, cols = self.depth_image.shape[:2] # get the shape of the depth image
         patch = self.depth_image[max(0, cY - DEPTH_HALF_WINDOW):min(rows, cY + DEPTH_HALF_WINDOW + 1),
-                                 max(0, cX - DEPTH_HALF_WINDOW):min(cols, cX + DEPTH_HALF_WINDOW + 1)]
-        valid = patch[np.isfinite(patch) & (patch > 0.0)]
+                                 max(0, cX - DEPTH_HALF_WINDOW):min(cols, cX + DEPTH_HALF_WINDOW + 1)] 
+        valid = patch[np.isfinite(patch) & (patch > 0.0)] # get valid depth values
+        
         if valid.size == 0:
             return
 
-        z = float(np.median(valid))
-        x = (cX - self.cx) * z / self.fx
+        z = float(np.median(valid))     # calculate the median depth
+        x = (cX - self.cx) * z / self.fx  # convert pixel coordinates to Cartesian coordinates
         y = (cY - self.cy) * z / self.fy
 
-        point_in_camera = PointStamped()
-        point_in_camera.header.frame_id = optical_frame
-        point_in_camera.header.stamp = self.get_clock().now().to_msg()
+        point_in_camera = PointStamped()             # create a PointStamped object
+        point_in_camera.header.frame_id = optical_frame        # set the frame id
+        point_in_camera.header.stamp = self.get_clock().now().to_msg()   # set the time stamp
         point_in_camera.point.x = float(x)
         point_in_camera.point.y = float(y)
         point_in_camera.point.z = float(z)
 
-        p = tf2_geometry_msgs.do_transform_point(point_in_camera, cam_to_base).point
+        p = tf2_geometry_msgs.do_transform_point(point_in_camera, cam_to_base).point   # transform the point to the base frame
 
         buf = self.ore_samples.setdefault(name, deque(maxlen=SAMPLES_PER_ORE))
         buf.append((p.x, p.y, p.z - ORE_HALF_HEIGHT))
@@ -372,14 +386,14 @@ class ore_tf(Node):
         Description:    Broadcast every ore measured so far, every cycle, from the median
                         of its recent samples (steady against depth noise and dropouts).
         '''
-        stamp = self.get_clock().now().to_msg()
-        for name, buf in self.ore_samples.items():
-            x, y, z = np.median(np.array(buf), axis=0)
+        stamp = self.get_clock().now().to_msg()     # get the current time
+        for name, buf in self.ore_samples.items():  # iterate through the ore samples
+            x, y, z = np.median(np.array(buf), axis=0)  # calculate the median of the samples
 
-            t = TransformStamped()
-            t.header.stamp = stamp
-            t.header.frame_id = base_frame
-            t.child_frame_id = name
+            t = TransformStamped()                  # create a TransformStamped object
+            t.header.stamp = stamp                  # set the time stamp
+            t.header.frame_id = base_frame          # set the frame id
+            t.child_frame_id = name                 # set the child frame id
             t.transform.translation.x = float(x)
             t.transform.translation.y = float(y)
             t.transform.translation.z = float(z)
@@ -443,27 +457,29 @@ class ore_tf(Node):
         #   ->  Show the frame with your detections drawn on it using 'cv2.imshow'.
 
         ############################################
-         # Wait for all inputs to arrive
+        
+        # Wait for all inputs to arrive
         if self.cv_image is None or self.depth_image is None or self.cam_info is None:
             return
- 
+
+        # Save calibration frame if requested and not already saved
         if SAVE_CALIBRATION_FRAME and not self.calibration_saved:
             cv2.imwrite('calib_frame.png', self.cv_image)
             self.calibration_saved = True
  
-        optical_frame = self.cam_info.header.frame_id
+        optical_frame = self.cam_info.header.frame_id   # get the optical frame from the camera info
  
         try:
             cam_to_base = self.tf_buffer.lookup_transform(
-                base_frame, optical_frame, rclpy.time.Time())
+                base_frame, optical_frame, rclpy.time.Time())   # lookup the transform from the optical frame to the base frame
         except (tf2_ros.LookupException,
                 tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException) as e:
             self.get_logger().warn(f"TF lookup failed: {e}", throttle_duration_sec=2.0)
             cam_to_base = None
  
-        vis_image = self.cv_image.copy()        # annotate a copy, detect on the clean frame
-        drawn = set()
+        vis_image = self.cv_image.copy()                                              # annotate a copy, detect on the clean frame
+        drawn = set()    # set to store the ores that have been drawn
  
         if cam_to_base is not None:
             contours = []
@@ -480,9 +496,9 @@ class ore_tf(Node):
                 self._update_ore_position(name, cX, cY, cam_to_base, optical_frame)
  
                 # boundary + the exact transform name
-                x, y, w, h = cv2.boundingRect(cnt)
-                cv2.rectangle(vis_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                cv2.putText(vis_image, name, (x, max(y - 6, 12)),
+                x_axis, y_axis, width, height = cv2.boundingRect(cnt)
+                cv2.rectangle(vis_image, (x_axis, y_axis), (x_axis + width, y_axis + height), (0, 255, 0), 2)
+                cv2.putText(vis_image, name, (x_axis, max(y_axis - 6, 12)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
                 drawn.add(name)
  
@@ -494,9 +510,9 @@ class ore_tf(Node):
  
         # the submission image: all six ores, boundary and label on each
         if len(drawn) == 6 and not self.detection_saved:
-            cv2.imwrite(DETECTION_IMAGE, vis_image)
-            self.detection_saved = True
-            self.get_logger().info(f"Saved {DETECTION_IMAGE}")
+            cv2.imwrite(DETECTION_IMAGE, vis_image)   # writing the image to the file
+            self.detection_saved = True               # setting the flag to True
+            self.get_logger().info(f"Saved {DETECTION_IMAGE}")   # logging information
 
 
 ##################### FUNCTION DEFINITION #######################
