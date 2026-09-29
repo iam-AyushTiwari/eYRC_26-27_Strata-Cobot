@@ -149,7 +149,7 @@ class arm_waypoints(Node):
 
         #proportional controler gains 
         self.kp_linear = 1.2                # proportional gains for the linear velocity 
-        self.kp_angular = 0.3               # proportional gains for the angular velocity
+        self.kp_angular = 0.2               # proportional gains for the angular velocity
         
         self.target_orientation = None      #orientation lock for the wrist
 
@@ -405,8 +405,8 @@ class arm_waypoints(Node):
         dot_a_b = np.dot(a_curr, b_target) #dot product of the current and target z-axes
 
         if c_norm > 1e-6:
-            e = (cross_product / c_norm) * math.atan2(c_norm, dot_a_b) #angular error
-            omega = self.kp_angular * e
+            error = (cross_product / c_norm) * math.atan2(c_norm, dot_a_b) #angular error
+            omega = self.kp_angular * error
         else:
             omega = np.zeros(3)
 
