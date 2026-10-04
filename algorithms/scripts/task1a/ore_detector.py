@@ -57,17 +57,20 @@ camera_info_topic = '/camera/camera/color/camera_info'
 base_frame = 'base_link'
 
 
-# HSV ranges for different ore types 
+# HSV ranges for different ore types (tuned from mesh diffuse colors and Gazebo lighting)
 hsv_ranges = {
-    'azurite_ore':    ((110, 50, 50), (130, 255, 255)),
-    'malachite_ore':  ((50, 50, 50),  (70, 255, 255)),
-    'vanadinite_ore': ((5, 50, 50),   (25, 255, 255)),
+    'azurite_ore':    ((95, 140, 60),  (118, 255, 255)),   # Centered on blue H=106
+    'malachite_ore':  ((60, 140, 60),  (85, 255, 255)),    # Centered on green H=70
+    'vanadinite_ore': ((0, 190, 80),   (15, 255, 255)),    # Centered on red-orange H=7, S>=190 rejects terrain (S~150)
 }
+# Secondary range for vanadinite red hue wrap near 180
+vanadinite_wrap_range = ((170, 190, 80), (179, 255, 255))
 
 
 ORE_HALF_HEIGHT = 0.025 # half height of the ore in meters
 
 MIN_ORE_AREA = 100          # contours smaller than this (pixels^2) are not ores
+MAX_ORE_AREA = 3000         # contours larger than this (pixels^2) are terrain, not ores
 MATCH_PX = 80               # max pixel jump for a detection to keep its id
 SAMPLES_PER_ORE = 10        # recent base_link samples medianed per ore
 DEPTH_HALF_WINDOW = 4       # 9x9 depth window around the centre pixel
@@ -98,30 +101,6 @@ def detect_ores(image):
     center_ore_list = []
     ore_type_list = []
 
-    ############ ADD YOUR CODE HERE ############
-
-    # INSTRUCTIONS & HELP :
-
-    #	->  Detect the ores by COLOUR, and return a center pixel and a type for each.
-    #       ->  HINT: hsv  = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    #                 mask = cv2.inRange(hsv, lower, upper)       # one pair per type
-    #                 H is 0-179, S and V are 0-255. The frame is BGR, not RGB.
-
-    #   ->  Read the bounds off a saved frame rather than copying them from a tutorial.
-
-    #   ->  Clean the mask, and drop anything too small to be an ore.
-    #       ->  HINT: cv2.morphologyEx (MORPH_OPEN, MORPH_CLOSE), cv2.contourArea
-
-    #   ->  Reduce each region to one center pixel.
-    #       ->  HINT: M  = cv2.moments(contour)                   # guard against m00 == 0
-    #                 cX = int(M['m10'] / M['m00'])
-    #                 cY = int(M['m01'] / M['m00'])
-
-    #   ->  Draw your detections on the frame while you are developing.
-    #       ->  HINT: cv2.circle, cv2.putText
-
-    ############################################
-
     # blur so single noisy pixels do not survive the threshold, then BGR -> HSV
     blurred_image = cv2.GaussianBlur(image, (5, 5), 0) # blur by 5x5 kernel to reduce noise
     hsv_image = cv2.cvtColor(blurred_image, cv2.COLOR_BGR2HSV) # Convert BGR to HSV
@@ -133,14 +112,29 @@ def detect_ores(image):
         mask = cv2.inRange(hsv_image,
                            np.array(lower, dtype=np.uint8),
                            np.array(upper, dtype=np.uint8))
+
+        # Red hue wraps around 0 and 179: combine with wrap range for vanadinite
+        if ore_type == 'vanadinite_ore':
+            mask_wrap = cv2.inRange(hsv_image,
+                                    np.array(vanadinite_wrap_range[0], dtype=np.uint8),
+                                    np.array(vanadinite_wrap_range[1], dtype=np.uint8))
+            mask = cv2.bitwise_or(mask, mask_wrap)
+
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        # only two ores of each type exist: keeping the two largest regions, so a
-        # stray blob can never take an id slot
-        candidates = [c for c in contours if cv2.contourArea(c) > MIN_ORE_AREA] # only contours with area more than threshold are considered
-        candidates.sort(key=cv2.contourArea, reverse=True) # sort the contours in descending order of area
+        # Discard terrain (> MAX_ORE_AREA), tiny noise (< MIN_ORE_AREA), and extreme aspect ratios
+        candidates = []
+        for c in contours:
+            a = cv2.contourArea(c)
+            if not (MIN_ORE_AREA <= a <= MAX_ORE_AREA):
+                continue
+            x, y, w, h = cv2.boundingRect(c)
+            if 0.4 <= float(w) / h <= 2.5:
+                candidates.append(c)
+
+        candidates.sort(key=cv2.contourArea, reverse=True)
 
         # keep only the top 2 candidates, to avoid noise
         for cnt in candidates[:2]:
@@ -152,8 +146,6 @@ def detect_ores(image):
 
             center_ore_list.append((cX, cY)) # append center pixel coordinates
             ore_type_list.append(ore_type)   # append ore type
-            if contours_out is not None:
-                contours_out.append(cnt)     # append contour
 
     ############################################
 
@@ -196,15 +188,6 @@ class ore_tf(Node):
         self.depth_image = None                                                         # depth image variable (from depthimagecb())
         self.cam_info = None                                                            # camera intrinsics variable (from caminfocb())
 
-        ############ ADD YOUR CODE HERE ############
-
-        # INSTRUCTIONS & HELP :
-
-        #	->  Add any variable your detection needs to keep between frames.
-        #       ->  HINT: The two ores of a type must keep their ids for the whole run, and
-        #                 'detect_ores' returns them unordered.
-
-        ############################################
 
         # Camera intrinsics
         self.fx, self.fy, self.cx, self.cy = None, None, None, None
@@ -228,23 +211,9 @@ class ore_tf(Node):
         Args:
             data (Image):    Input depth image frame received from the aligned depth camera topic
 
-        Returns: None : Convert the depth image msg to cv2 image for furhter processing
+        Returns: 
         '''
 
-        ############ ADD YOUR CODE HERE ############
-
-        # INSTRUCTIONS & HELP :
-
-        #	->  Convert the ROS Image message to a CV2 image and store it.
-        #       ->  HINT: self.bridge.imgmsg_to_cv2(data, desired_encoding='passthrough')
-
-        #   ->  Get the units right. Print 'depth.dtype'.
-        #       ->  HINT: 32FC1 is METRES; 16UC1 is MILLIMETRES, so divide by 1000.
-
-        #   ->  Drop the pixels that carry no reading.
-        #       ->  HINT: depth[np.isfinite(depth) & (depth > 0.0)]
-
-        ############################################
 
         # try-except block for CvBridgeError
         try:
@@ -265,17 +234,9 @@ class ore_tf(Node):
         Args:
             data (Image):    Input coloured raw image frame received from the image_raw camera topic
 
-        Returns: None
+        Returns: 
         '''
 
-        ############ ADD YOUR CODE HERE ############
-
-        # INSTRUCTIONS & HELP :
-
-        #	->  Convert the ROS Image message to a CV2 image and store it.
-        #       ->  HINT: self.bridge.imgmsg_to_cv2(data, desired_encoding='bgr8')
-
-        ############################################
 
         # try-except block for CvBridgeError
         try:
@@ -293,19 +254,9 @@ class ore_tf(Node):
         Args:
             data (CameraInfo):    Camera calibration published by the camera
 
-        Returns: None 
+        Returns: 
         '''
 
-        ############ ADD YOUR CODE HERE ############
-
-        # INSTRUCTIONS & HELP :
-
-        #	->  Store the focal lengths and the principal point. Read them from the topic;
-        #       never hard-code them.
-        #       ->  HINT: 'k' is the pinhole matrix flattened row by row-
-        #                     k = [fx, 0, cx, 0, fy, cy, 0, 0, 1]
-
-        ############################################
 
         self.cam_info = data
         # Camera intrinsic matrix K = [fx, 0, cx, 0, fy, cy, 0, 0, 1]
@@ -354,7 +305,12 @@ class ore_tf(Node):
         Description:    Read depth at the ore centre, deproject it, move it into base_frame,
                         and add it to the ore's recent samples.
 
-        Returns: None (leaves the samples untouched when there is no valid depth)
+        Args:
+            name (str):          name of the ore, e.g. 'azurite_ore_1'
+            cX, cY (int):        centre pixel of the detection
+            cam_to_base (TransformStamped):   transform from camera to base frame
+            optical_frame (str):   frame id of the optical frame
+        Returns
         '''
 
         rows, cols = self.depth_image.shape[:2] # get the shape of the depth image
@@ -386,6 +342,7 @@ class ore_tf(Node):
         '''
         Description:    Broadcast every ore measured so far, every cycle, from the median
                         of its recent samples (steady against depth noise and dropouts).
+        Returns:
         '''
         stamp = self.get_clock().now().to_msg()     # get the current time
         for name, buf in self.ore_samples.items():  # iterate through the ore samples
@@ -406,58 +363,9 @@ class ore_tf(Node):
         '''
         Description:    Timer function used to detect the ores and publish a transform for each one on its estimated position.
 
-        Args: None
-        Returns: None
+        Args: 
+        Returns:
         '''
-
-        ############ ADD YOUR CODE HERE ############
-
-        # INSTRUCTIONS & HELP :
-
-        #	->  Return early until both images and the camera info have arrived.
-
-        #   ->  Get the ore centers and their types from 'detect_ores' defined above
-
-        #   ->  Read the depth at each center pixel. Depth is ALIGNED to colour.
-        #       ->  HINT: Take the MEDIAN of a small window, not the one pixel-
-        #                     patch = self.depth_image[cY-4:cY+5, cX-4:cX+5]
-        #                     z     = np.median(patch[np.isfinite(patch) & (patch > 0.0)])
-
-        #   ->  Deproject the center pixel (u, v) and its depth z into a 3D point-
-        #           x = (u - cx) * z / fx
-        #           y = (v - cy) * z / fy
-        #           z = z
-        #       ->  HINT: That point is in the camera's OPTICAL frame - 'data.header.frame_id'.
-
-        #   ->  Transform it into 'base_frame'-
-        #           tf = self.tf_buffer.lookup_transform(
-        #                    base_frame, <optical frame>, rclpy.time.Time())
-        #           p  = do_transform_point(point_in_camera, tf)
-        #       ->  HINT: PointStamped and tf2_geometry_msgs are not imported above, and the
-        #                 lookup raises until the tree has filled in.
-
-        #   ->  Correct for what you measured: the camera sees the ore's top face, and the
-        #       ore is named by its middle.
-
-        #   ->  Give each ore an id and keep it for the whole run.
-        #       ->  HINT: Match a detection to the nearest ore of that type already named,
-        #                 on the pixel rather than the depth.
-
-        #   ->  Publish one transform per ore, using Geometry Message - TransformStamped
-        #       Use the following frame_id-
-        #           frame_id = 'base_link'
-        #           child_frame_id = '<ore_type>_<id>'      Ex: azurite_ore_1, where azurite_ore
-        #                                                   is one of 'ore_types' and the id is 1 or 2
-        #       ->  HINT: t.header.stamp, t.header.frame_id, t.child_frame_id,
-        #                 t.transform.translation.x/.y/.z, t.transform.rotation.w = 1.0,
-        #                 then self.br.sendTransform(t). Every number must be a float.
-        #       ->  NOTE: Only the translation is read; the names are matched exactly.
-
-        #   ->  Broadcast every ore on every cycle, not once.
-
-        #   ->  Show the frame with your detections drawn on it using 'cv2.imshow'.
-
-        ############################################
         
         # Wait for all inputs to arrive
         if self.cv_image is None or self.depth_image is None or self.cam_info is None:
@@ -483,11 +391,10 @@ class ore_tf(Node):
         drawn = set()    # set to store the ores that have been drawn
  
         if cam_to_base is not None:
-            contours = []
-            center_ore_list, ore_type_list = detect_ores(self.cv_image, contours)
+            center_ore_list, ore_type_list = detect_ores(self.cv_image)
             used = set()
  
-            for (cX, cY), ore_type, cnt in zip(center_ore_list, ore_type_list, contours):
+            for (cX, cY), ore_type in zip(center_ore_list, ore_type_list):
                 ore_id = self._assign_ore_id(ore_type, cX, cY, used)
                 if ore_id is None:
                     continue
@@ -497,7 +404,8 @@ class ore_tf(Node):
                 self._update_ore_position(name, cX, cY, cam_to_base, optical_frame)
  
                 # boundary + the exact transform name
-                x_axis, y_axis, width, height = cv2.boundingRect(cnt)
+                box_size = 15
+                x_axis, y_axis, width, height = cX - box_size, cY - box_size, box_size * 2, box_size * 2
                 cv2.rectangle(vis_image, (x_axis, y_axis), (x_axis + width, y_axis + height), (0, 255, 0), 2)
                 cv2.putText(vis_image, name, (x_axis, max(y_axis - 6, 12)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
