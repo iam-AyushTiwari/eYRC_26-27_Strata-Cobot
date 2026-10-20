@@ -34,6 +34,7 @@ package_name = 'algorithms'
 SCRIPTS = [
     # Your nodes go here, for example:
     'scripts/task1a/ore_detector.py',
+    'scripts/task1b/arm_waypoints.py',
     # 'scripts/task1b/task1b.py',
     # 'scripts/task1c/task1c.py',
 ]
