@@ -24,5 +24,6 @@ SC-*-task-*/
 
 .DS_Store
 
-#ignore test folder
-test
+# Ignore test directory
+test/
+
