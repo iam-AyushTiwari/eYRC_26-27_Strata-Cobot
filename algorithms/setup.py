@@ -35,7 +35,7 @@ SCRIPTS = [
     # Your nodes go here, for example:
     # 'scripts/task1a/task1a.py',
     # 'scripts/task1b/task1b.py',
-    # 'scripts/task1c/task1c.py',
+    'scripts/task1c/path_follower.py',
 ]
 
 setup(
