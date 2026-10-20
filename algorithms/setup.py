@@ -36,7 +36,7 @@ SCRIPTS = [
     'scripts/task1a/ore_detector.py',
     'scripts/task1b/arm_waypoints.py',
     # 'scripts/task1b/task1b.py',
-    # 'scripts/task1c/task1c.py',
+    'scripts/task1c/path_follower.py',
 ]
 
 setup(
