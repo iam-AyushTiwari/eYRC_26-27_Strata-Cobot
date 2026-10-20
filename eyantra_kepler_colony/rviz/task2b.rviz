@@ -251,7 +251,7 @@ Visualization Manager:
     - Alpha: 1
       Buffer Length: 1
       Class: rviz_default_plugins/Path
-      Color: 25; 255; 0
+      Color: 255; 0; 0
       Enabled: true
       Head Diameter: 0.10000000149011612
       Head Length: 0.10000000149011612
@@ -264,7 +264,7 @@ Visualization Manager:
         Y: 0
         Z: 0
       Pose Color: 255; 85; 255
-      Pose Style: Axes
+      Pose Style: None
       Radius: 0.029999999329447746
       Shaft Diameter: 0.10000000149011612
       Shaft Length: 0.10000000149011612
@@ -317,18 +317,18 @@ Visualization Manager:
           Value: false
         Value: false
       Enabled: true
-      Keep: 200
+      Keep: 50
       Name: Odometry
       Position Tolerance: 0.10000000149011612
       Shape:
         Alpha: 1
         Axes Length: 0.20000000298023224
         Axes Radius: 0.02500000037252903
-        Color: 255; 25; 0
-        Head Length: 0.05000000074505806
-        Head Radius: 0.03999999910593033
-        Shaft Length: 0.10000000149011612
-        Shaft Radius: 0.019999999552965164
+        Color: 0; 12; 255
+        Head Length: 0.05
+        Head Radius: 0.05
+        Shaft Length: 0.01
+        Shaft Radius: 0.06
         Value: Arrow
       Topic:
         Depth: 5
