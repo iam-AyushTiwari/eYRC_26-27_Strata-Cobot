@@ -373,17 +373,7 @@ class ebot_planner(Node):
 
         self.grid = None                                                                # the map (from mapcb())
         self.odom = None                                                                # where the base is (from odomcb())
-        self.step = 0                                                                   # which step of the lap is next (index into 'steps')
-
-        ############ ADD YOUR CODE HERE ############
-
-        # INSTRUCTIONS & HELP :
-
-        #	->  Add any variable your planner needs to keep between cycles.
-        #       ->  HINT: Whether the current step's path has been published, and whether
-        #                 the ore package has been requested, for a start.
-
-        ############################################
+        self.step = 0                                         
 
 
         # The map, once read
@@ -413,24 +403,6 @@ class ebot_planner(Node):
         Returns:
         '''
 
-        ############ ADD YOUR CODE HERE ############
-
-        # INSTRUCTIONS & HELP :
-
-        #	->  Store the grid. Read the message definition first
-        #       -> https://docs.ros2.org/latest/api/nav_msgs/msg/OccupancyGrid.html
-
-        #   ->  The cells come as ONE flat list, row by row, starting at the map's origin-
-        #           value = data.data[row * width + col]
-        #       ->  HINT: data.info.width, data.info.height, data.info.resolution and
-        #                 data.info.origin.position say how the grid sits in the map frame.
-
-        #   ->  Every cell is free (0) or occupied (100). There are no unknown cells.
-
-        #   ->  Log the size and the resolution once, so you can check them against RViz.
-
-        ############################################
-
         info = data.info
 
         # row-major, so reshaping to (height, width) gives grid[row, col]
@@ -457,17 +429,6 @@ class ebot_planner(Node):
 
         Returns:
         '''
-
-        ############ ADD YOUR CODE HERE ############
-
-        # INSTRUCTIONS & HELP :
-
-        #	->  Store the position, the heading and the velocity of the base.
-        #       ->  HINT: data.pose.pose.position, data.pose.pose.orientation (a quaternion)
-        #                     yaw = atan2(2 * (w*z + x*y), 1 - 2 * (y*y + z*z))
-        #                 data.twist.twist says whether it is standing still.
-
-        ############################################
         
         position = data.pose.pose.position # position of the base in (x, y)
         orientation = data.pose.pose.orientation # orientation of the base in quaternion format
@@ -500,31 +461,6 @@ class ebot_planner(Node):
         '''
 
         points = None
-
-        ############ ADD YOUR CODE HERE ############
-
-        # INSTRUCTIONS & HELP :
-
-        #	->  Convert between map coordinates and grid cells, in both directions-
-        #           col = int((x - origin_x) / resolution)
-        #           x   = origin_x + (col + 0.5) * resolution      # the centre of the cell
-        #       ->  NOTE: Most "the path crosses a rock" surprises are an off-by-one here.
-
-        #   ->  Grow the rocks into a costmap first. The eBot is not a point: a path that
-        #       only just misses a rock takes the chassis through it.
-        #       ->  HINT: How much to grow them is the trade on the task page: too little and
-        #                 the eBot clips a rock, too much and the path gets longer.
-
-        #   ->  Search the costmap from the start cell to the end cell with any algorithm you
-        #       write yourself (breadth-first, Dijkstra, A*, a sampling planner, ...).
-        #       ->  NOTE: Ready-made planning or navigation packages are NOT allowed.
-
-        #   ->  Turn the cells back into points, and thin them out. One point per cell is a
-        #       jagged path that is longer than it needs to be.
-
-        #   ->  The first and last points must be EXACTLY the step's start and end positions.
-
-        ############################################
         
         # Trying with different margins to find a path 
         for margin, band in ((SAFETY_MARGIN, SOFT_BAND), (SAFETY_MARGIN * 0.5, 0.0), (0.0, 0.0)):
@@ -641,22 +577,6 @@ class ebot_planner(Node):
         path.header.frame_id = map_frame # setting the frame id of the path
         path.header.stamp = self.get_clock().now().to_msg() # setting the timestamp of the path
 
-        ############ ADD YOUR CODE HERE ############
-
-        # INSTRUCTIONS & HELP :
-
-        #	->  Add one PoseStamped per point, each with header.frame_id = map_frame-
-        #           pose = PoseStamped()
-        #           pose.pose.position.x, pose.pose.position.y = x, y
-
-        #   ->  Give the first and last poses the step's start and end yaw, as a quaternion-
-        #           z = sin(yaw / 2), w = cos(yaw / 2)
-        #       ->  HINT: The poses in between can face along the path.
-
-        #   ->  Publish with self.path_pub. The last path published before the eBot moves
-        #       off is the one that counts.
-
-        ############################################
         last = len(points) - 1 # finding the last point in the path
 
 
@@ -692,24 +612,6 @@ class ebot_planner(Node):
         Args:
         Returns:
         '''
-
-        ############ ADD YOUR CODE HERE ############
-
-        # INSTRUCTIONS & HELP :
-
-        #	->  Check the service is there first-
-        #           self.spawn_client.service_is_ready()
-
-        #   ->  Call it without blocking the node-
-        #           future = self.spawn_client.call_async(Trigger.Request())
-        #           future.add_done_callback(...)
-        #       ->  NOTE: Never wait for the result inside a callback or a timer. The reply
-        #                 is delivered by the same executor you would be blocking.
-
-        #   ->  Log the reply's 'success' and 'message'. A call made while the eBot is still
-        #       moving, or away from the ore drop pose, returns success: false.
-
-        ############################################
 
         # checking if the spawn client is ready
         if not self.spawn_client.service_is_ready():
@@ -772,25 +674,6 @@ class ebot_planner(Node):
         Args:
         Returns:
         '''
-
-        ############ ADD YOUR CODE HERE ############
-
-        # INSTRUCTIONS & HELP :
-
-        #	->  Return early until the map and odometry have both arrived.
-
-        #   ->  For the next step: plan with plan_path(), then publish_path(), while the eBot
-        #       stands still at the step's start.
-
-        #   ->  Watch /odom to know when your follower has finished the step: standing still
-        #       within 0.3 m and 0.15 rad of the step's end pose.
-        #       ->  HINT: At the end of step 1, request_ore_package() before moving on.
-
-        #   ->  Then move on to the next step. Stop after step 3.
-
-        #   ->  Nothing here should raise. An uncaught exception kills the node.
-
-        ############################################
 
         # returning early if the map or odometry is not available
         if self.grid is None or self.odom is None:
