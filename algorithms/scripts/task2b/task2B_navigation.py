@@ -86,10 +86,10 @@ MIN_TRACK_SPEED = 0.05      # m/s, so it never stalls just short of the end
 # The path is done when the eBot is this close to its last point, then it turns on the spot to the yaw the path ends with. The task guide allows 0.3 m and 0.15 rad.
 
 FINAL_POSITION_TOL = 0.08   # m
-FINAL_YAW_TOL = 0.04        # rad
+FINAL_YAW_TOL = 0.10        # rad
 YAW_KP = 1.5
 
-ROTATE_MAX = 0.8            # rad/s
+ROTATE_MAX = 0.4          # rad/s
 ROTATE_MIN = 0.15           # rad/s, below this a skid-steer base does not turn at all
 RESUME_DISTANCE = 0.25      # m, if the turn pushes it this far off the last point, drive back
 
@@ -161,15 +161,12 @@ class path_tracker:
  
         #if ebot is close to the end point, switch to rotate phase
         if self.phase == 'ROTATE':
-            if to_end > RESUME_DISTANCE:
-                self.phase = 'TRACK'
-            else:
-                error = wrap_angle(self.final_yaw - yaw)
-                if abs(error) <= FINAL_YAW_TOL:
-                    self.phase = 'HOLD'
-                    return 0.0, 0.0
-                rate = max(ROTATE_MIN, min(ROTATE_MAX, YAW_KP * abs(error)))
-                return 0.0, math.copysign(rate, error)
+            error = wrap_angle(self.final_yaw - yaw)
+            if abs(error) <= FINAL_YAW_TOL:
+                self.phase = 'HOLD'
+                return 0.0, 0.0
+            rate = max(ROTATE_MIN, min(ROTATE_MAX, YAW_KP * abs(error)))
+            return 0.0, math.copysign(rate, error)
  
         # TRACK: move the progress marker on while the next point is nearer than this one
         count = len(self.points)
@@ -255,6 +252,7 @@ class ebot_nav(Node):
         self.tracker = path_tracker() # the following logic
 
         self.last_phase = 'IDLE' # to log each change of phase once
+        self.odom = None
 
 
     def pathcb(self, data):
@@ -362,7 +360,7 @@ class ebot_nav(Node):
  
             if self.tracker.phase != self.last_phase:
                 self.last_phase = self.tracker.phase
-                self.get_logger().info(f"Following: {self.last_phase}")
+                self.get_logger().info(f"Following: {self.last_phase} at x={odom_x:.2f} y={odom_y:.2f} yaw={odom_yaw:.2f}")
  
         except Exception as nav_error:
             self.get_logger().error(f"process_navigation failed: {nav_error}")

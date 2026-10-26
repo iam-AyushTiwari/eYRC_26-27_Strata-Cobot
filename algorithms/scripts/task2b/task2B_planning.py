@@ -34,11 +34,15 @@
 import rclpy
 import sys
 import math
+import numpy as np
+import heapq
+from scipy.ndimage import distance_transform_edt
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSHistoryPolicy, QoSReliabilityPolicy, QoSDurabilityPolicy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from std_srvs.srv import Trigger
+
 
 
 ##################### TASK CONSTANTS #######################
@@ -59,7 +63,7 @@ map_frame = 'map'
 # At the ore drop pose and the arm pose either yaw, 0.0 or 3.14, is valid.
 home_pose = (0.0, 0.0, 0.0)
 ore_drop_pose = (6.0, 1.9, 0.0)
-arm_pose = (0.0, 1.9, 0.0)
+arm_pose = (0.0, 1.9, math.pi)
 
 # The lap, as (start, end) of each step, in the order they are driven.
 steps = [
@@ -93,8 +97,8 @@ STILL_ANGULAR = 0.02            # rad/s
 PLAN_STILL_S = 0.5              # seconds still before a path is published
 
 # A step is finished when the eBot is this close to its end pose and has stood still a while. (according to task guide it is 0.3m and 0.15 rad)
-ARRIVE_POS_TOL = 0.20           # Position tolerance (m)
-ARRIVE_YAW_TOL = 0.10           # Yaw tolerance (rad)
+ARRIVE_POS_TOL = 0.30           # Position tolerance (m)
+ARRIVE_YAW_TOL = 0.15           # Yaw tolerance (rad)
 ARRIVE_STILL_S = 1.0            # (seconds ebot stands at the final point for it to be detected as 'arrived'.)
 
 PACKAGE_RETRY_S = 1.5           # seconds between /spawn_ore_package attempts
@@ -102,6 +106,10 @@ MAX_PACKAGE_TRIES = 5
 PACKAGE_SETTLE_S = 2.0          # let the package land before moving off
 STEP_TIMEOUT_S = 180.0          # give up waiting for a step after this long
 
+SQRT2 = math.sqrt(2.0)
+
+MOVES = [(-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0),
+        (-1, -1, SQRT2), (-1, 1, SQRT2), (1, -1, SQRT2), (1, 1, SQRT2)]
 
 
 
@@ -158,11 +166,6 @@ def build_clearance_map(grid, resolution):
     # distances are between cell centres; half a cell off the rock's true surface
     return distance_transform_edt(~occupied) * resolution - 0.5 * resolution
  
- 
-    SQRT2 = math.sqrt(2.0)
-    MOVES = [(-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0),
-         (-1, -1, SQRT2), (-1, 1, SQRT2), (1, -1, SQRT2), (1, 1, SQRT2)]
-
 
 def astar(blocked, penalty, start, goal):
     '''
@@ -817,8 +820,10 @@ class ebot_planner(Node):
             if self.phase == 'PLAN':
                 if still_for < PLAN_STILL_S:
                     return
-                # planning the path
                 points = self.plan_path(start, end)
+                # planning the path
+                if self.step == 2:
+                    points = self.plan_path(start, end)
                 # checking if the path is not empty
                 if points is None:
                     self.get_logger().error(f"No path for step {self.step + 1}", throttle_duration_sec=2.0)
@@ -838,7 +843,6 @@ class ebot_planner(Node):
                           and abs(math.atan2(math.sin(end[2] - yaw), math.cos(end[2] - yaw))) <= ARRIVE_YAW_TOL
                           and still_for >= ARRIVE_STILL_S)
                 if at_end:
-                    # logging that the eBot has arrived at the end of the current step once it has stood still for a certain amount of time 
                     self.get_logger().info(f"Step {self.step + 1}: arrived and standing still")
                     # if the step is 0, change the phase to package
                     if self.step == 0:
