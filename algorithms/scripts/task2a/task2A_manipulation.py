@@ -425,7 +425,7 @@ class arm_waypoints(Node):
                 self.get_logger().info(
                     f"Magnet engaged for {current_ore_name}, force={self.tool_force:.2f} N, lifting...")
             return
-
+ 
         # State 4: Lift vertical
         elif self.task_state == 'LIFT_ORE':
             target_pos = np.array([self.lift_xy[0], self.lift_xy[1], 0.35])
