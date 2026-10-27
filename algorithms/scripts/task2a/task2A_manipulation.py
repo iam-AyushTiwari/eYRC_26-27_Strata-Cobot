@@ -154,9 +154,9 @@ class arm_waypoints(Node):
         
         # Define container drop positions relative to base_link
         self.containers = {
-            'azurite_ore': (-0.5, 0.3, 0.30),
-            'malachite_ore': (-0.5, 0.1, 0.30),
-            'vanadinite_ore': (-0.5, -0.1, 0.30)
+            'azurite_ore': (-0.58, 0.58, 0.12),
+            'malachite_ore': (-0.34, 0.58, 0.12),
+            'vanadinite_ore': (-0.05, 0.58, 0.12)
         }
         self.task_state = 'APPROACH_HOVER'
         self.state_start_time = None
@@ -165,8 +165,8 @@ class arm_waypoints(Node):
         self.kp_linear = 1.2                # proportional gains for the linear velocity 
         self.kp_angular = 0.2               # proportional gains for the angular velocity
         self.distance_tolerance = 0.025     # metres; within this the arm is considered "at target"
-        self.descend_tolerance = 0.004      # metres; tight, so the tool really reaches the capture gap above the ore
-        self.contact_force = 0.4            # lowered to 0.4 N to prevent arm_status=22 critical collision latch
+        self.descend_tolerance = 0.005      # metres; tight, so the tool really reaches the capture gap above the ore
+        self.contact_force = 5.0            # baseline gravity is ~1.46 N; contact threshold set to 5.0 N
         
         self.target_orientation = None      # orientation lock for the wrist
 
@@ -406,9 +406,9 @@ class arm_waypoints(Node):
         if self.task_state == 'APPROACH_HOVER':
             target_pos = np.array([ore_x, ore_y, 0.35])
 
-        # State 2: Descend to ore (ore_z + 0.045 to avoid hitting surface before magnet engages)
+        # State 2: Descend to ore (target lower so magnet makes solid physical contact with the ore top surface)
         elif self.task_state == 'DESCEND_ORE':
-            target_pos = np.array([ore_x, ore_y, ore_z + 0.045])
+            target_pos = np.array([ore_x, ore_y, ore_z + 0.035])
             self.call_magnet_service(True)
 
         # State 3: Dwell to engage magnet
@@ -418,7 +418,7 @@ class arm_waypoints(Node):
             if self.state_start_time is None:
                 self.state_start_time = now
             elapsed = (now - self.state_start_time).nanoseconds / 1e9
-            if elapsed >= 0.6:
+            if elapsed >= 1.0:
                 self.state_start_time = None
                 self.lift_xy = (self.tcp_pose.position.x, self.tcp_pose.position.y)
                 self.task_state = 'LIFT_ORE'
@@ -432,7 +432,7 @@ class arm_waypoints(Node):
 
         # State 5: Move to container
         elif self.task_state == 'MOVE_CONTAINER':
-            container_coords = self.containers.get(ore_type_key, (-0.5, 0.0, 0.30))
+            container_coords = self.containers.get(ore_type_key, (-0.34, 0.58, 0.12))
             target_pos = np.array(container_coords)
 
         # State 6: Release ore

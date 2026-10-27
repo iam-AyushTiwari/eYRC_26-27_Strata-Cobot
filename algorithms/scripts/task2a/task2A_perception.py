@@ -123,7 +123,7 @@ def detect_ores(image):
 
         candidates.sort(key=cv2.contourArea, reverse=True)
 
-        for cnt in candidates[:1]:  # Limit to 1 best candidate per type per frame to prevent over-registration
+        for cnt in candidates[:2]:  # Allow up to 2 ores of each type (e.g. malachite_ore_1 and malachite_ore_2)
             M = cv2.moments(cnt)
             if M['m00'] == 0:
                 continue
@@ -236,7 +236,7 @@ class ore_tf(Node):
                 known[best] = (cX, cY)
                 return best + 1
 
-        if len(known) < 1:  # Restrict to 1 instance per type if only 4 total ores exist
+        if len(known) < 2:  # Up to 2 ores per type (_1 and _2)
             known.append((cX, cY))
             return len(known)
 
