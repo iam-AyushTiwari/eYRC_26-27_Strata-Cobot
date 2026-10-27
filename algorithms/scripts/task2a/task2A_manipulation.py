@@ -33,7 +33,7 @@ import sys
 import math
 from rclpy.node import Node
 from control_msgs.msg import JointJog
-from controller_manager_msgs.srv import SwitchController
+from controller_manager_msgs.srv import SwitchController, ConfigureController
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Int32
@@ -41,7 +41,7 @@ from scipy.spatial.transform import Rotation
 import numpy as np
 import tf2_ros
 from tf2_ros import TransformException
-from std_srvs.srv import SetBool
+from std_srvs.srv import SetBool, Trigger
 from std_msgs.msg import Float32
 
 
@@ -154,10 +154,16 @@ class arm_waypoints(Node):
         
         # Define container drop positions relative to base_link
         self.containers = {
-            'azurite_ore': (-0.58, 0.58, 0.12),
-            'malachite_ore': (-0.34, 0.58, 0.12),
-            'vanadinite_ore': (-0.05, 0.58, 0.12)
+            'azurite_ore': (-0.05, 0.58, 0.12),     # Blue container (Top)
+            'malachite_ore': (-0.34, 0.58, 0.12),   # Green container (Middle)
+            'vanadinite_ore': (-0.58, 0.58, 0.12)   # Orange container (Bottom / near cab)
         }
+
+        # Transit waypoints routing around the front to avoid self-collision with the UR7e base
+        self.gate_conveyor  = np.array([0.15, -0.45, 0.35])
+        self.gate_front     = np.array([0.35, 0.0, 0.35])
+        self.gate_container = np.array([0.15, 0.45, 0.35])
+
         self.task_state = 'APPROACH_HOVER'
         self.state_start_time = None
 
@@ -165,15 +171,20 @@ class arm_waypoints(Node):
         self.kp_linear = 1.2                # proportional gains for the linear velocity 
         self.kp_angular = 0.2               # proportional gains for the angular velocity
         self.distance_tolerance = 0.025     # metres; within this the arm is considered "at target"
-        self.descend_tolerance = 0.005      # metres; tight, so the tool really reaches the capture gap above the ore
-        self.contact_force = 5.0            # baseline gravity is ~1.46 N; contact threshold set to 5.0 N
+        self.descend_tolerance = 0.004      # metres; tight capture gap (< 5.0 mm capture window)
+        self.transit_tolerance = 0.06       # metres; fly-through gate tolerance
+        self.contact_force = 2.5            # baseline gravity is ~1.46 N; contact threshold set to 2.5 N
         
         self.target_orientation = None      # orientation lock for the wrist
+        self.unlock_cli = self.create_client(Trigger, f'{servo_ns}/unlock_protective_stop')
 
         # Controller switch management 
         self.active_controller = None       # active controller state variables
         self.switch_future = None           # switch future state
         self.switch_pending = None          # switch pending state 
+        self.cm_switch_cli = self.create_client(SwitchController, '/controller_manager/switch_controller')
+        self.cm_config_cli = self.create_client(ConfigureController, '/controller_manager/configure_controller')
+        self.last_cm_check = None 
 
         self.phase = 'unfold'               # phase state variables
 
@@ -252,6 +263,10 @@ class arm_waypoints(Node):
             self.get_logger().error(
                 f"PROTECTIVE STOP: arm_status={data.data} in state {self.task_state}, "
                 f"force={self.tool_force:.2f} N")
+            if self.unlock_cli.service_is_ready():
+                req = Trigger.Request()
+                self.unlock_cli.call_async(req)
+                self.get_logger().info("Requested /ur_arm_controller/unlock_protective_stop")
         self.arm_status = data.data
 
     def switch_controller(self, controller):
@@ -308,12 +323,32 @@ class arm_waypoints(Node):
         msg.velocities = [0.0] * len(joint_names)
         self.joint_pub.publish(msg)
 
+    def ensure_hardware_controllers(self):
+        '''
+        Description:    Ensure forward_position_controller and joint_state_broadcaster are active
+                        in controller_manager so Gazebo executes arm joint commands.
+        '''
+        now = self.get_clock().now()
+        if self.last_cm_check is not None and (now - self.last_cm_check).nanoseconds / 1e9 < 1.0:
+            return
+        self.last_cm_check = now
+        if self.cm_config_cli.service_is_ready():
+            req = ConfigureController.Request()
+            req.name = 'forward_position_controller'
+            self.cm_config_cli.call_async(req)
+        if self.cm_switch_cli.service_is_ready():
+            req = SwitchController.Request()
+            req.activate_controllers = ['forward_position_controller', 'joint_state_broadcaster']
+            req.strictness = SwitchController.Request.BEST_EFFORT
+            self.cm_switch_cli.call_async(req)
+
     def run_unfold(self):
         '''
         Description:    Drive the joints toward unfold_targets using switch_controller.
         Args:
         Returns:
         '''
+        self.ensure_hardware_controllers()
         if self.active_controller != joint_controller:
             if self.switch_future is None:
                 self.switch_controller(joint_controller)
@@ -393,13 +428,19 @@ class arm_waypoints(Node):
                 if self.missing_since is None:
                     self.missing_since = now
                 if (now - self.missing_since).nanoseconds / 1e9 > 3.0:
+                    found_next = False
                     for future_ore in self.ore_targets[self.current_ore_idx + 1:]:
                         if self.tf_buffer.can_transform(base_frame, future_ore, rclpy.time.Time()):
                             self.get_logger().info(f"Skipping absent ore {current_ore_name} -> {future_ore}")
                             self.current_ore_idx = self.ore_targets.index(future_ore)
                             self.task_state = 'APPROACH_HOVER'
                             self.missing_since = None
+                            found_next = True
                             break
+                    if not found_next and (now - self.missing_since).nanoseconds / 1e9 > 5.0:
+                        self.get_logger().info(f"No future ores found on TF, advancing past {current_ore_name}")
+                        self.current_ore_idx += 1
+                        self.missing_since = None
                 return
 
         # State 1: Hover above ore
@@ -418,24 +459,41 @@ class arm_waypoints(Node):
             if self.state_start_time is None:
                 self.state_start_time = now
             elapsed = (now - self.state_start_time).nanoseconds / 1e9
-            if elapsed >= 1.0:
+            if elapsed >= 1.2:
                 self.state_start_time = None
+                self.best_dist = None
+                self.best_time = None
                 self.lift_xy = (self.tcp_pose.position.x, self.tcp_pose.position.y)
                 self.task_state = 'LIFT_ORE'
                 self.get_logger().info(
                     f"Magnet engaged for {current_ore_name}, force={self.tool_force:.2f} N, lifting...")
             return
- 
+
         # State 4: Lift vertical
         elif self.task_state == 'LIFT_ORE':
             target_pos = np.array([self.lift_xy[0], self.lift_xy[1], 0.35])
 
-        # State 5: Move to container
-        elif self.task_state == 'MOVE_CONTAINER':
+        # State 5: Arc around front to container
+        elif self.task_state == 'TRANSIT_CONV_GATE':
+            target_pos = self.gate_conveyor
+
+        elif self.task_state == 'TRANSIT_FRONT_GATE':
+            target_pos = self.gate_front
+
+        elif self.task_state == 'TRANSIT_CONT_GATE':
+            target_pos = self.gate_container
+
+        # State 6: Hover above container
+        elif self.task_state == 'HOVER_CONTAINER':
+            container_coords = self.containers.get(ore_type_key, (-0.34, 0.58, 0.12))
+            target_pos = np.array([container_coords[0], container_coords[1], 0.35])
+
+        # State 7: Lower into container
+        elif self.task_state == 'LOWER_CONTAINER':
             container_coords = self.containers.get(ore_type_key, (-0.34, 0.58, 0.12))
             target_pos = np.array(container_coords)
 
-        # State 6: Release ore
+        # State 8: Dwell to release ore
         elif self.task_state == 'RELEASE_ORE':
             self.publish_zero_twist()
             self.call_magnet_service(False)
@@ -444,10 +502,26 @@ class arm_waypoints(Node):
             elapsed = (now - self.state_start_time).nanoseconds / 1e9
             if elapsed >= 0.6:
                 self.state_start_time = None
+                self.best_dist = None
+                self.best_time = None
                 self.get_logger().info(f"Dropped {current_ore_name} into container.")
-                self.current_ore_idx += 1
-                self.task_state = 'APPROACH_HOVER'
+                self.task_state = 'LIFT_FROM_CONTAINER'
             return
+
+        # State 9: Lift vertically out of container
+        elif self.task_state == 'LIFT_FROM_CONTAINER':
+            container_coords = self.containers.get(ore_type_key, (-0.34, 0.58, 0.12))
+            target_pos = np.array([container_coords[0], container_coords[1], 0.35])
+
+        # State 10: Arc around front back to conveyor
+        elif self.task_state == 'RETURN_CONT_GATE':
+            target_pos = self.gate_container
+
+        elif self.task_state == 'RETURN_FRONT_GATE':
+            target_pos = self.gate_front
+
+        elif self.task_state == 'RETURN_CONV_GATE':
+            target_pos = self.gate_conveyor
 
         current_pos = np.array([self.tcp_pose.position.x, self.tcp_pose.position.y, self.tcp_pose.position.z])
         error_pos = target_pos - current_pos
@@ -458,21 +532,28 @@ class arm_waypoints(Node):
             throttle_duration_sec=0.5
         )
 
-        if self.best_state != self.task_state or self.best_dist is None or distance < self.best_dist - 0.002:
+        if self.best_state != self.task_state or self.best_dist is None or distance < self.best_dist - 0.0002:
             self.best_state, self.best_dist, self.best_time = self.task_state, distance, now
-        stalled = (now - self.best_time).nanoseconds / 1e9 > 2.0
+        stalled = (now - self.best_time).nanoseconds / 1e9 > 3.0
         if stalled:
             self.get_logger().warn(
                 f"STALLED in {self.task_state} | dist={distance:.4f} m | "
                 f"arm_status={self.arm_status} | force={self.tool_force:.2f} N",
                 throttle_duration_sec=2.0)
 
-        tol = self.descend_tolerance if self.task_state == 'DESCEND_ORE' else self.distance_tolerance
+        if self.task_state == 'DESCEND_ORE':
+            tol = self.descend_tolerance
+        elif self.task_state in ('TRANSIT_CONV_GATE', 'TRANSIT_FRONT_GATE', 'TRANSIT_CONT_GATE',
+                                 'RETURN_CONT_GATE', 'RETURN_FRONT_GATE', 'RETURN_CONV_GATE'):
+            tol = self.transit_tolerance
+        else:
+            tol = self.distance_tolerance
+
         force_contact = (self.task_state == 'DESCEND_ORE' and
-                         (self.arm_status == 12 or self.tool_force > self.contact_force or stalled))
+                         (self.arm_status == 12 or self.tool_force > self.contact_force or (stalled and distance < 0.012)))
 
         if distance > tol and not force_contact:
-            max_linear = 0.025 if self.task_state == 'DESCEND_ORE' else cap_linear_mps
+            max_linear = 0.030 if self.task_state == 'DESCEND_ORE' else cap_linear_mps
             v_lin = self.kp_linear * error_pos
             v_mag = np.linalg.norm(v_lin)
             max_cap = max_linear * 0.98
@@ -518,6 +599,8 @@ class arm_waypoints(Node):
             self.twist_pub.publish(twist_msg)
         else:
             self.publish_zero_twist()
+            self.best_dist = None
+            self.best_time = None
             if self.task_state == 'APPROACH_HOVER':
                 self.get_logger().info(f"Hovering above {current_ore_name}, descending to grasp...")
                 self.task_state = 'DESCEND_ORE'
@@ -527,13 +610,32 @@ class arm_waypoints(Node):
                 self.state_start_time = None
                 self.task_state = 'GRIP_ORE'
             elif self.task_state == 'LIFT_ORE':
-                self.get_logger().info(f"Lifted {current_ore_name}, moving to container...")
-                self.task_state = 'MOVE_CONTAINER'
-            elif self.task_state == 'MOVE_CONTAINER':
+                self.get_logger().info(f"Lifted {current_ore_name}, transiting to container...")
+                self.task_state = 'TRANSIT_CONV_GATE'
+            elif self.task_state == 'TRANSIT_CONV_GATE':
+                self.task_state = 'TRANSIT_FRONT_GATE'
+            elif self.task_state == 'TRANSIT_FRONT_GATE':
+                self.task_state = 'TRANSIT_CONT_GATE'
+            elif self.task_state == 'TRANSIT_CONT_GATE':
+                self.task_state = 'HOVER_CONTAINER'
+            elif self.task_state == 'HOVER_CONTAINER':
+                self.get_logger().info(f"Hovering over container for {current_ore_name}, lowering...")
+                self.task_state = 'LOWER_CONTAINER'
+            elif self.task_state == 'LOWER_CONTAINER':
                 self.get_logger().info(f"Reached container for {current_ore_name}, releasing...")
                 self.call_magnet_service(False)
                 self.state_start_time = None
                 self.task_state = 'RELEASE_ORE'
+            elif self.task_state == 'LIFT_FROM_CONTAINER':
+                self.get_logger().info(f"Lifted clear of container, returning to conveyor...")
+                self.task_state = 'RETURN_CONT_GATE'
+            elif self.task_state == 'RETURN_CONT_GATE':
+                self.task_state = 'RETURN_FRONT_GATE'
+            elif self.task_state == 'RETURN_FRONT_GATE':
+                self.task_state = 'RETURN_CONV_GATE'
+            elif self.task_state == 'RETURN_CONV_GATE':
+                self.current_ore_idx += 1
+                self.task_state = 'APPROACH_HOVER'
 
     def process_waypoints(self):
         '''
