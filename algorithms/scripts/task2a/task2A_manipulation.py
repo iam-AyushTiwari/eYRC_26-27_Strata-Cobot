@@ -327,6 +327,8 @@ class arm_waypoints(Node):
         '''
         Description:    Ensure forward_position_controller and joint_state_broadcaster are active
                         in controller_manager so Gazebo executes arm joint commands.
+        Args: 
+        Return: 
         '''
         now = self.get_clock().now()
         if self.last_cm_check is not None and (now - self.last_cm_check).nanoseconds / 1e9 < 1.0:
@@ -493,7 +495,7 @@ class arm_waypoints(Node):
             container_coords = self.containers.get(ore_type_key, (-0.34, 0.58, 0.12))
             target_pos = np.array(container_coords)
 
-        # State 8: Dwell to release ore
+        # State 8: release ore
         elif self.task_state == 'RELEASE_ORE':
             self.publish_zero_twist()
             self.call_magnet_service(False)
