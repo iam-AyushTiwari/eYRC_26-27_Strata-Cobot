@@ -33,7 +33,7 @@ import sys
 import math
 from rclpy.node import Node
 from control_msgs.msg import JointJog
-from controller_manager_msgs.srv import SwitchController, ConfigureController
+from controller_manager_msgs.srv import SwitchController
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Int32
@@ -182,9 +182,6 @@ class arm_waypoints(Node):
         self.active_controller = None       # active controller state variables
         self.switch_future = None           # switch future state
         self.switch_pending = None          # switch pending state 
-        self.cm_switch_cli = self.create_client(SwitchController, '/controller_manager/switch_controller')
-        self.cm_config_cli = self.create_client(ConfigureController, '/controller_manager/configure_controller')
-        self.last_cm_check = None 
 
         self.phase = 'unfold'               # phase state variables
 
@@ -323,34 +320,12 @@ class arm_waypoints(Node):
         msg.velocities = [0.0] * len(joint_names)
         self.joint_pub.publish(msg)
 
-    def ensure_hardware_controllers(self):
-        '''
-        Description:    Ensure forward_position_controller and joint_state_broadcaster are active
-                        in controller_manager so Gazebo executes arm joint commands.
-        Args: 
-        Return: 
-        '''
-        now = self.get_clock().now()
-        if self.last_cm_check is not None and (now - self.last_cm_check).nanoseconds / 1e9 < 1.0:
-            return
-        self.last_cm_check = now
-        if self.cm_config_cli.service_is_ready():
-            req = ConfigureController.Request()
-            req.name = 'forward_position_controller'
-            self.cm_config_cli.call_async(req)
-        if self.cm_switch_cli.service_is_ready():
-            req = SwitchController.Request()
-            req.activate_controllers = ['forward_position_controller', 'joint_state_broadcaster']
-            req.strictness = SwitchController.Request.BEST_EFFORT
-            self.cm_switch_cli.call_async(req)
-
     def run_unfold(self):
         '''
         Description:    Drive the joints toward unfold_targets using switch_controller.
         Args:
         Returns:
         '''
-        self.ensure_hardware_controllers()
         if self.active_controller != joint_controller:
             if self.switch_future is None:
                 self.switch_controller(joint_controller)
