@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <!--
-  eBot Gazebo configuration: the differential drive and odometry plugins, and the
+  eBot Gazebo configuration: the differential drive and joint state plugins, and the
   LiDAR, ultrasonic and contact sensors.
 
   Copyright (c) e-Yantra, IIT Bombay.
@@ -29,17 +29,6 @@
     </plugin>
   </gazebo>
 
-
-  <gazebo>
-    <plugin
-      filename="gz-sim-odometry-publisher-system"
-      name="gz::sim::systems::OdometryPublisher">
-      <odom_topic>odom</odom_topic>
-      <odom_frame>odom</odom_frame>
-      <tf_topic>tf</tf_topic>
-      <robot_base_frame>base_footprint</robot_base_frame>
-    </plugin>
-  </gazebo>
 
   <gazebo>
     <plugin

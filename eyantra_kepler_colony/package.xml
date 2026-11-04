@@ -2,11 +2,12 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>eyantra_kepler_colony</name>
-  <version>2.0.0</version>
+  <version>3.0.0</version>
   <description>
     Gazebo Harmonic simulation of the Kepler colony mining arena: the SDF world plus
-    its models and meshes, the arena world plugin, and the Task 2 launch files: the arm
-    and its ores (task2a), and the eBot on a rock map (task2b).
+    its models and meshes, the arena world plugin, and the Task 3 launch files: the arm,
+    its ores and the eBot on a rock map in one world (task3a, and task3b with noisier
+    sensors and rocks off the map).
   </description>
   <maintainer email="helpdesk@e-yantra.org">e-Yantra</maintainer>
   <license>Apache-2.0</license>

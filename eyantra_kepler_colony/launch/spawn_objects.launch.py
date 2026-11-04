@@ -3,7 +3,7 @@
 '''
 Spawn the ore samples, the ore package and the scattered rocks into a running world.
 
-The world must already be up. Neither Task 2 launch file includes this one: it is for
+The world must already be up. Neither Task 3 launch file includes this one: it is for
 experimenting in a running world. An evaluation run refuses a world holding models the
 subtask's world does not.
 '''

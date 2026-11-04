@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>algorithms</name>
-  <version>2.0.0</version>
+  <version>3.0.0</version>
   <description>
     Your Task 1 solutions. Copy a boilerplate from boilerplate/ into the matching
     folder under scripts/ using your own file name, and add that copy to setup.py.
@@ -18,6 +18,8 @@
   <exec_depend>control_msgs</exec_depend>
   <exec_depend>controller_manager_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>

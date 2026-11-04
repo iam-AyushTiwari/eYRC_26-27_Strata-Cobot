@@ -2,29 +2,35 @@
 # -*- coding: utf-8 -*-
 '''
 *****************************************************************************************
-*  Filename:       task2b.launch.py
-*  Description:    Task 2B -- planning a path on the map, publishing it, driving it, and
-*                  the ore package run. Brings up the arena, a randomly selected rock map
-*                  and the eBot at home, then opens RViz. No arm and no ores: nothing in
-*                  this task picks, and the ore package appears only when
-*                  /spawn_ore_package grants it.
+*  Filename:       task3a.launch.py
+*  Description:    Task 3A -- both robots in one run. Brings up the arena, the UR7e with its
+*                  mast RealSense and magnet, four ores on the conveyor, a randomly selected
+*                  rock map and the eBot at home, then opens RViz. The ore package appears
+*                  only when /spawn_ore_package grants it.
 *
-*                      ros2 launch eyantra_kepler_colony task2b.launch.py
-*                      ros2 launch eyantra_kepler_colony task2b.launch.py gui:=false
+*                      ros2 launch eyantra_kepler_colony task3a.launch.py
+*                      ros2 launch eyantra_kepler_colony task3a.launch.py gui:=false
 *
-*                  It does NOT run a planner or a driver, and nothing hands you a route:
-*                  /map is published, /ebot_path is yours. Planning a path for each step on
-*                  the map, publishing it and driving it is the task; run your own nodes
-*                  alongside this once it prints "Task 2B world ready: Start your nodes now.":
+*                  It does NOT run any of your nodes. Run them alongside this once it prints
+*                  "Task 3A world ready: Start your nodes now.":
 *
-*                      ros2 run algorithms task2B_planning.py
-*                      ros2 run algorithms task2B_navigation.py
+*                      ros2 run algorithms task3A_perception.py
+*                      ros2 run algorithms task3A_manipulation.py
+*                      ros2 run algorithms task3A_planning.py
+*                      ros2 run algorithms task3A_navigation.py
 *
 *                  What the arena gives you:
 *
+*                      /camera/camera/color/image_raw                   colour, 640x480
+*                      /camera/camera/aligned_depth_to_color/image_raw  depth, 32FC1 m
+*                      /camera/camera/color/camera_info                 intrinsics
+*                      /magnet                              std_srvs/SetBool service
+*                      /ur7e/end_effector/force_magnitude   std_msgs/Float32
+*                      /arm_status                          std_msgs/Int32
 *                      /map                nav_msgs/OccupancyGrid, latched (TRANSIENT_LOCAL),
 *                                          published once as the rocks spawn
 *                      /scan               2D LiDAR, 360 samples over +/- 1.57 rad
+*                      /ultrasonic_rl, /ultrasonic_rr    the rear range sensors
 *                      /odom               the eBot's pose and velocity
 *                      /cmd_vel            drive the base by publishing here
 *                      /spawn_ore_package  std_srvs/Trigger SERVICE. Succeeds only while the
@@ -59,6 +65,7 @@ from launch.substitutions import (
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
+_ARM_DELAY = 5.0
 _EBOT_DELAY = 6.0
 _RVIZ_DELAY = 12.0
 
@@ -175,6 +182,14 @@ def generate_launch_description():
         output="screen",
     )
 
+    arm = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution(
+                [FindPackageShare("ur_description"), "launch", "spawn_ur7e.launch.py"]
+            )
+        ),
+    )
+
     ebot = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
@@ -204,16 +219,18 @@ def generate_launch_description():
         output="screen",
         condition=IfCondition(LaunchConfiguration("rviz")),
         parameters=[{"use_sim_time": True}],
-        arguments=["-d", PathJoinSubstitution([pkg_share, "rviz", "task2b.rviz"])],
+        arguments=["-d", PathJoinSubstitution([pkg_share, "rviz", "task3.rviz"])],
     )
 
     ready = _ready_line(
         [
             ("gazebo", "[KeplerArenaPlugin] Rock spawn complete."),
+            ("gazebo", "[KeplerArenaPlugin] Ore spawn complete."),
+            ("ur_arm_controller", "ready: arm verified, safety armed"),
             ("parameter_bridge", "[ebot_bridge]: Creating ROS->GZ Bridge: [/cmd_vel"),
         ],
         ("rviz2", "[rviz2]: Trying to create a map"),
-        "Task 2B world ready: Start your nodes now.",
+        "Task 3A world ready: Start your nodes now.",
     )
 
     return LaunchDescription(
@@ -222,6 +239,7 @@ def generate_launch_description():
             gz_sim,
             clock_bridge,
             map_to_world,
+            TimerAction(period=_ARM_DELAY, actions=[arm]),
             TimerAction(period=_EBOT_DELAY, actions=[ebot]),
             TimerAction(period=_RVIZ_DELAY, actions=[rviz]),
         ]
