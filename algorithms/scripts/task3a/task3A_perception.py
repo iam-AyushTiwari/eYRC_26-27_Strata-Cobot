@@ -58,9 +58,11 @@ base_frame = 'base_link'
 hsv_ranges = {
     'azurite_ore':    ((95, 140, 60),  (118, 255, 255)),
     'malachite_ore':  ((60, 140, 60),  (85, 255, 255)),
-    'vanadinite_ore': ((0, 190, 80),   (15, 255, 255)),
+    # vanadinite is fully saturated and bright (about H 10, S 255, V 255); the rocks and the
+    # terrain share its hue but sit at S 155-215 and V 50-175, so they are cut by S and V
+    'vanadinite_ore': ((0, 235, 180),  (15, 255, 255)),
 }
-vanadinite_wrap_range = ((170, 190, 80), (179, 255, 255))
+vanadinite_wrap_range = ((170, 235, 180), (179, 255, 255))
 
 TF_BELOW_TOP = 0.0381
 ORE_HALF_HEIGHT = 0.0381
@@ -68,6 +70,13 @@ EXPECTED_ORES = 4
 
 MIN_ORE_AREA = 150          # tightened to filter noise
 MAX_ORE_AREA = 2500         # tightened to filter terrain
+# The conveyor, in base_link, where every ore starts (ore tops measured at z = -0.064,
+# y = -0.62 to -0.81, x = -0.25 to 0.05). A detection whose top is anywhere else, on a rock,
+# the terrain or an ore already dropped in a container, is ignored.
+ORE_ZONE_X = (-0.70, 0.70)
+ORE_ZONE_Y = (-1.05, -0.30)
+ORE_ZONE_Z = (-0.15, 0.05)
+
 MATCH_PX = 45               # stricter matching threshold to prevent ID shifting
 SAMPLES_PER_ORE = 10
 DEPTH_HALF_WINDOW = 4
@@ -86,8 +95,10 @@ at_arm_topic = '/ebot_at_arm'                 # True while the eBot waits beside
 package_picked_topic = '/package_picked'      # True once the arm has the package (task3A_manipulation.py)
 PACKAGE_HALF_HEIGHT = 0.0381                  # m, half of the box's 76.2 mm height
 PACKAGE_SEARCH_RADIUS = 0.40                  # m, around the eBot's centre, in the ground plane
-PACKAGE_MIN_ABOVE_BASE = 0.10                 # m above ebot_base_link: below this is the eBot's body
-PACKAGE_MAX_ABOVE_BASE = 0.50                 # m above ebot_base_link: above this is the arm, not the box
+# The eBot's top deck is the top of its tower, 0.675 m above ebot_base_link (collision box
+# 0.35 x 0.29 x 0.435 m centred 0.4575 m up), so the box's top face is about 0.751 m up.
+PACKAGE_MIN_ABOVE_BASE = 0.70                 # m above ebot_base_link: below this is the tower's own top
+PACKAGE_MAX_ABOVE_BASE = 0.82                 # m above ebot_base_link: above this is the arm, not the box
 PACKAGE_TOP_BAND = 0.015                      # m, points this close to the highest surface count as the top face
 PACKAGE_MIN_POINTS = 150                      # fewer top-face points than this is not the box
 PACKAGE_SAMPLES = 8                           # stable samples before the package position is frozen
@@ -313,41 +324,62 @@ class ore_tf(Node):
 
         return None
 
-    def _update_ore_position(self, name, cX, cY, cam_to_base, optical_frame):
+    def _ore_top_in_base(self, cX, cY, cam_to_base, optical_frame):
         '''
-        Description:    Read depth at the ore centre, deproject it, move it into base_frame,
-                        and add it to the ore's recent samples.
+        Description:    Read depth at a detection's centre, deproject it and move it into base_frame.
 
         Args:
-            name (str):          name of the ore, e.g. 'azurite_ore_1'
-            cX, cY (int):        centre pixel of the detection
+            cX, cY (int):                     centre pixel of the detection
             cam_to_base (TransformStamped):   transform from camera to base frame
-            optical_frame (str):   frame id of the optical frame
+            optical_frame (str):              frame id of the optical frame
+
         Returns:
+            top (Point):    the detection's top surface in base_frame, or None without a depth reading
         '''
         rows, cols = self.depth_image.shape[:2]
         patch = self.depth_image[max(0, cY - DEPTH_HALF_WINDOW):min(rows, cY + DEPTH_HALF_WINDOW + 1),
-                                 max(0, cX - DEPTH_HALF_WINDOW):min(cols, cX + DEPTH_HALF_WINDOW + 1)] 
+                                 max(0, cX - DEPTH_HALF_WINDOW):min(cols, cX + DEPTH_HALF_WINDOW + 1)]
         valid = patch[np.isfinite(patch) & (patch > 0.0)]
-        
+
         if valid.size == 0:
-            return
+            return None
 
         z = float(np.median(valid))
-        x = (cX - self.cx) * z / self.fx
-        y = (cY - self.cy) * z / self.fy
-
         point_in_camera = PointStamped()
         point_in_camera.header.frame_id = optical_frame
         point_in_camera.header.stamp = self.get_clock().now().to_msg()
-        point_in_camera.point.x = float(x)
-        point_in_camera.point.y = float(y)
-        point_in_camera.point.z = float(z)
+        point_in_camera.point.x = float((cX - self.cx) * z / self.fx)
+        point_in_camera.point.y = float((cY - self.cy) * z / self.fy)
+        point_in_camera.point.z = z
 
-        p = tf2_geometry_msgs.do_transform_point(point_in_camera, cam_to_base).point
+        return tf2_geometry_msgs.do_transform_point(point_in_camera, cam_to_base).point
 
+    def _in_ore_zone(self, top):
+        '''
+        Description:    Whether a detection's top surface lies on the conveyor, where the ores start.
+
+        Args:
+            top (Point):    the detection's top surface in base_frame
+
+        Returns:
+            inside (bool)
+        '''
+        return (ORE_ZONE_X[0] <= top.x <= ORE_ZONE_X[1]
+                and ORE_ZONE_Y[0] <= top.y <= ORE_ZONE_Y[1]
+                and ORE_ZONE_Z[0] <= top.z <= ORE_ZONE_Z[1])
+
+    def _update_ore_position(self, name, top):
+        '''
+        Description:    Add a detection's position to the ore's recent samples.
+
+        Args:
+            name (str):     name of the ore, e.g. 'azurite_ore_1'
+            top (Point):    the ore's top surface in base_frame, from _ore_top_in_base()
+
+        Returns:
+        '''
         buf = self.ore_samples.setdefault(name, deque(maxlen=SAMPLES_PER_ORE))
-        buf.append((p.x, p.y, p.z - ORE_HALF_HEIGHT))
+        buf.append((top.x, top.y, top.z - ORE_HALF_HEIGHT))
 
     def _broadcast_ores(self):
         '''
@@ -502,13 +534,17 @@ class ore_tf(Node):
             used = set()
  
             for (cX, cY), ore_type in zip(center_ore_list, ore_type_list):
+                # only what lies on the conveyor is an ore still to be sorted
+                top = self._ore_top_in_base(cX, cY, cam_to_base, optical_frame)
+                if top is None or not self._in_ore_zone(top):
+                    continue
                 ore_id = self._assign_ore_id(ore_type, cX, cY, used)
                 if ore_id is None:
                     continue
                 used.add((ore_type, ore_id))
                 name = f"{ore_type}_{ore_id}"
  
-                self._update_ore_position(name, cX, cY, cam_to_base, optical_frame)
+                self._update_ore_position(name, top)
  
                 box_size = 15
                 x_axis, y_axis, width, height = cX - box_size, cY - box_size, box_size * 2, box_size * 2

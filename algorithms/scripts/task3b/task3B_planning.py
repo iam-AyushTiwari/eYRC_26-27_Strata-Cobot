@@ -120,6 +120,12 @@ PACKAGE_SETTLE_S = 2.0          # let the package land before moving off
 STEP_TIMEOUT_S = 180.0          # give up waiting for a step after this long
 HANDOVER_TIMEOUT_S = 400.0      # leave the arm anyway if the package is never taken
 
+# The leg to the arm ends with a straight run-in along the stop pose's heading, so the eBot
+# parks facing the arm without turning on the spot beside the arm cell, whose conveyor and
+# platform are not on /map.
+APPROACH_DISTANCE = 0.80        # m, length of the straight run-in
+APPROACH_CHECK_SKIP = 0.30      # m nearest the stop pose not checked: the arm cell's map line is close there
+
 # Odometry is noisy in Task 3B, so "standing still" is judged on smoothed velocities.
 VELOCITY_FILTER_ALPHA = 0.2     # weight of the newest reading in the running average
 
@@ -730,6 +736,39 @@ class ebot_planner(Node):
 
         return points
 
+    def plan_with_approach(self, start, end):
+        '''
+        Description:    Plans to a point APPROACH_DISTANCE behind 'end' along its heading, then
+                        straight on to 'end', so the eBot drives in already facing the arm. Falls
+                        back to plan_path() when the run-in is not clear of the map's rocks.
+
+        Args:
+            start (tuple):    (x, y, yaw) where the step begins, in the map frame
+            end (tuple):      (x, y, yaw) of the stop pose, in the map frame
+
+        Returns:
+            list:             [(x, y), ...] from 'start' to 'end', or None if no path was found
+        '''
+        approach = (end[0] - APPROACH_DISTANCE * math.cos(end[2]),
+                    end[1] - APPROACH_DISTANCE * math.sin(end[2]), end[2])
+        run_in = resample_path([approach[:2], end[:2]], RESAMPLE_SPACING)
+
+        # the run-in must clear the map's rocks by the robot's radius and margin, and stay on the map
+        check = resample_path([approach[:2], end[:2]], 0.05)
+        clear = True
+        for x, y in check:
+            if math.hypot(x - end[0], y - end[1]) < APPROACH_CHECK_SKIP:
+                continue
+            if not self._inside(x, y) or self.clearance[world_to_cell(x, y, self.origin, self.resolution)] < ROBOT_RADIUS + SAFETY_MARGIN * 0.5:
+                clear = False
+                break
+
+        first = self.plan_path(start, approach) if clear else None
+        if first is None:
+            self.get_logger().warn("Straight run-in to the arm is blocked; planning straight to the stop pose")
+            return self.plan_path(start, end)
+        return first + run_in[1:]
+
     def _inside(self, x, y):
         '''
         Description:    Checks if a position is inside the grid.
@@ -945,8 +984,8 @@ class ebot_planner(Node):
             if self.phase == 'PLAN':
                 if still_for < PLAN_STILL_S:
                     return
-                # planning the path
-                points = self.plan_path(start, end)
+                # planning the path; the leg to the arm ends with a straight run-in
+                points = self.plan_with_approach(start, end) if self.step == 1 else self.plan_path(start, end)
                 # checking if the path is not empty
                 if points is None:
                     self.get_logger().error(f"No path for step {self.step + 1}", throttle_duration_sec=2.0)

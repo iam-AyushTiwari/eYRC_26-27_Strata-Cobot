@@ -94,6 +94,7 @@ kp_joint = 0.8 # proportional gains for the joint angles
 at_arm_topic = '/ebot_at_arm'                # True while the eBot waits beside the arm with the package
 package_picked_topic = '/package_picked'     # we publish True once the package is off the deck
 package_frame = 'ore_package'                # the package's transform, from task3B_perception.py
+PACKAGE_TOP_ABOVE_TF = 0.0381                # m, the package transform sits half its 76.2 mm height below the top face
 
 # The ore crusher's hopper, measured from the depth image in base_link: far rim at
 # x = -0.66, side walls at y = +/-0.27, rim at z = 0.21 and floor at z = 0.03.
@@ -103,6 +104,8 @@ hopper_hover_z = 0.42                        # tool height above the hopper befo
 package_held_force = 2.0                     # N; the package reads about 2.94 N on the magnet, an ore about 1.46 N
 package_clear_height = 0.08                  # m the tool rises above the grip point before the eBot may leave
 package_max_linear = 0.10                    # m/s; slower moves while the heavier package hangs on the tool
+package_hover_above = 0.15                   # m above the package's top face to hover at and lift to; it sits
+                                             # on the eBot's tower, about 0.25 m above base_link, higher than the ores
 force_filter_length = 5                      # readings in the running median of the noisy tool force
 
 # Shared latched QoS for the handover topics
@@ -204,7 +207,8 @@ class arm_waypoints(Node):
         self.package_waiting = False        # True while the eBot waits beside the arm (from atarmcb())
         self.package_done = False           # set once the package has been dropped in the hopper
         self.package_picked_sent = False    # set once /package_picked has been published True
-        self.grip_z = None                  # tool height when the package was gripped
+        self.grip_z = None                  # tool height when the item was gripped
+        self.lift_z = 0.35                  # tool height the item is lifted to
         self.publish_package_picked(False)
 
         self.task_state = 'APPROACH_HOVER'
@@ -552,9 +556,10 @@ class arm_waypoints(Node):
 
         drop, drop_hover_z = self.drop_position(current_ore_name)
 
-        # State 1: Hover above the item
+        # State 1: Hover above the item (the package stands higher than the ores)
         if self.task_state == 'APPROACH_HOVER':
-            target_pos = np.array([ore_x, ore_y, 0.35])
+            hover_z = max(0.35, ore_z + PACKAGE_TOP_ABOVE_TF + package_hover_above) if is_package else 0.35
+            target_pos = np.array([ore_x, ore_y, hover_z])
 
         # State 2: Descend onto the item (target lower so the magnet makes solid contact with its top surface)
         elif self.task_state == 'DESCEND_ORE':
@@ -574,6 +579,7 @@ class arm_waypoints(Node):
                 self.best_time = None
                 self.lift_xy = (self.tcp_pose.position.x, self.tcp_pose.position.y)
                 self.grip_z = self.tcp_pose.position.z
+                self.lift_z = max(0.35, self.grip_z + package_hover_above) if is_package else 0.35
                 self.task_state = 'LIFT_ORE'
                 self.get_logger().info(
                     f"Magnet engaged for {current_ore_name}, force={self.tool_force:.2f} N, lifting...")
@@ -581,7 +587,7 @@ class arm_waypoints(Node):
 
         # State 4: Lift vertically
         elif self.task_state == 'LIFT_ORE':
-            target_pos = np.array([self.lift_xy[0], self.lift_xy[1], 0.35])
+            target_pos = np.array([self.lift_xy[0], self.lift_xy[1], self.lift_z])
             # the eBot may leave as soon as the package hangs clear of its deck
             if (is_package and not self.package_picked_sent
                     and self.tcp_pose.position.z > self.grip_z + package_clear_height
