@@ -80,6 +80,9 @@ LOOKAHEAD = 0.50            # m, how far ahead along the path the eBot aims
 LINEAR_KP = 0.8
 ANGULAR_KP = 2
 MIN_TRACK_SPEED = 0.05      # m/s, so it never stalls just short of the end
+# Beyond this heading error the eBot turns on the spot before driving: driving while turning
+# swings its 0.62 x 0.49 m body wide, and leaving the arm it clipped the arena's west wall.
+HEADING_GATE = 0.5          # rad
 
 # The path is done when the eBot is this close to its last point, then it turns on the spot to the yaw the path ends with. The task guide allows 0.3 m and 0.15 rad.
 
@@ -200,6 +203,10 @@ class path_tracker:
         # to avoid stalling just short of the end
         if facing > 0.3:
             linear = max(linear, MIN_TRACK_SPEED)
+
+        # far off the heading, turn on the spot first so the body does not swing wide
+        if abs(heading_error) > HEADING_GATE:
+            linear = 0.0
 
         # angular velocity is proportional to the heading error
         angular = ANGULAR_KP * heading_error

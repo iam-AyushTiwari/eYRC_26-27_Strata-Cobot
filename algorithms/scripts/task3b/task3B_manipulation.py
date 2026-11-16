@@ -94,16 +94,19 @@ kp_joint = 0.8 # proportional gains for the joint angles
 at_arm_topic = '/ebot_at_arm'                # True while the eBot waits beside the arm with the package
 package_picked_topic = '/package_picked'     # we publish True once the package is off the deck
 package_frame = 'ore_package'                # the package's transform, from task3B_perception.py
-PACKAGE_TOP_ABOVE_TF = 0.0381                # m, the package transform sits half its 76.2 mm height below the top face
+PACKAGE_TOP_ABOVE_TF = 0.0                   # m; the package transform sits on the centre of its top face
 
 # The ore crusher's hopper, measured from the depth image in base_link: far rim at
 # x = -0.66, side walls at y = +/-0.27, rim at z = 0.21 and floor at z = 0.03.
 hopper_drop = (-0.78, 0.0, 0.33)             # tool position the package is released at
 hopper_hover_z = 0.42                        # tool height above the hopper before and after the drop
 
-package_held_force = 2.0                     # N; the package reads about 2.94 N on the magnet, an ore about 1.46 N
-package_clear_height = 0.08                  # m the tool rises above the grip point before the eBot may leave
+package_held_force = 2.0                     # N; at rest the package reads about 2.94 N on the magnet, an empty magnet near 0
+package_settle_s = 0.6                       # s standing still before the force is read: while moving it swings from 1.2 to 5 N
 package_max_linear = 0.10                    # m/s; slower moves while the heavier package hangs on the tool
+descend_fast_mps = 0.12                      # m/s; descent speed down to descend_slow_zone above the grip point
+descend_slow_zone = 0.06                     # m above the grip point where the descent slows to contact speed
+ore_held_force = 0.8                         # N; at rest an ore reads about 1.46 N on the magnet, an empty magnet near 0
 package_hover_above = 0.15                   # m above the package's top face to hover at and lift to; it sits
                                              # on the eBot's tower, about 0.25 m above base_link, higher than the ores
 force_filter_length = 5                      # readings in the running median of the noisy tool force
@@ -538,7 +541,10 @@ class arm_waypoints(Node):
                     return
                 if self.missing_since is None:
                     self.missing_since = now
-                if (now - self.missing_since).nanoseconds / 1e9 > 3.0:
+                # once an earlier item has been handled every ore is frozen on TF, so a missing
+                # name is truly absent and is skipped at once; before that, perception may still be settling
+                skip_after_s = 0.3 if self.current_ore_idx > 0 else 3.0
+                if (now - self.missing_since).nanoseconds / 1e9 > skip_after_s:
                     found_next = False
                     for future_ore in self.ore_targets[self.current_ore_idx + 1:]:
                         if self.tf_buffer.can_transform(base_frame, future_ore, rclpy.time.Time()):
@@ -563,7 +569,10 @@ class arm_waypoints(Node):
 
         # State 2: Descend onto the item (target lower so the magnet makes solid contact with its top surface)
         elif self.task_state == 'DESCEND_ORE':
-            target_pos = np.array([ore_x, ore_y, ore_z + 0.035])
+            # 3 mm below the top face, so the magnet makes solid contact: every item's transform
+            # (ore or package) sits on the centre of its top face
+            grip_z = ore_z - 0.003
+            target_pos = np.array([ore_x, ore_y, grip_z])
             self.call_magnet_service(True)
 
         # State 3: Dwell to engage magnet
@@ -577,6 +586,13 @@ class arm_waypoints(Node):
                 self.state_start_time = None
                 self.best_dist = None
                 self.best_time = None
+                # standing still the force reads true: an ore that is not on the magnet is
+                # descended onto again rather than carried away as nothing
+                if not is_package and self.tool_force < ore_held_force:
+                    self.get_logger().warn(
+                        f"{current_ore_name} not on the magnet (force={self.tool_force:.2f} N at rest); descending again")
+                    self.task_state = 'DESCEND_ORE'
+                    return
                 self.lift_xy = (self.tcp_pose.position.x, self.tcp_pose.position.y)
                 self.grip_z = self.tcp_pose.position.z
                 self.lift_z = max(0.35, self.grip_z + package_hover_above) if is_package else 0.35
@@ -588,13 +604,34 @@ class arm_waypoints(Node):
         # State 4: Lift vertically
         elif self.task_state == 'LIFT_ORE':
             target_pos = np.array([self.lift_xy[0], self.lift_xy[1], self.lift_z])
-            # the eBot may leave as soon as the package hangs clear of its deck
-            if (is_package and not self.package_picked_sent
-                    and self.tcp_pose.position.z > self.grip_z + package_clear_height
-                    and self.tool_force > package_held_force):
+
+        # State 4b: stand still at the top of the package's lift until the force settles, then
+        # decide whether the package came up with the tool
+        elif self.task_state == 'CHECK_HOLD':
+            self.publish_zero_twist()
+            if self.state_start_time is None:
+                self.state_start_time = now
+            if (now - self.state_start_time).nanoseconds / 1e9 < package_settle_s:
+                return
+            self.state_start_time = None
+            self.best_dist = None
+            self.best_time = None
+            if self.tool_force < package_held_force:
+                self.get_logger().warn(
+                    f"Package not held (force={self.tool_force:.2f} N at rest); trying the grip again")
+                self.call_magnet_service(False)
+                self.task_state = 'APPROACH_HOVER'
+                return
+            # the eBot may leave only once the package is confirmed on the magnet, well clear of its deck
+            if not self.package_picked_sent:
                 self.publish_package_picked(True)
                 self.package_picked_sent = True
-                self.get_logger().info(f"Package clear of the deck (force={self.tool_force:.2f} N); eBot may leave")
+                self.get_logger().info(f"Package held (force={self.tool_force:.2f} N at rest); eBot may leave")
+            self.get_logger().info(f"Lifted {current_ore_name}, transiting to its drop...")
+            self.route = self.route_to_drop(current_ore_name)
+            self.route_idx = 0
+            self.task_state = 'TRANSIT'
+            return
 
         # State 5: Through the gates to the drop
         elif self.task_state in ('TRANSIT', 'RETURN'):
@@ -654,13 +691,16 @@ class arm_waypoints(Node):
         else:
             tol = self.distance_tolerance
 
-        force_contact = (self.task_state == 'DESCEND_ORE' and
+        # contact is trusted only in the slow zone just above the item: moving fast, the force
+        # sensor reads the tool's own acceleration as a force well above contact_force
+        force_contact = (self.task_state == 'DESCEND_ORE' and distance <= descend_slow_zone and
                          (self.arm_status == 12 or self.tool_force > self.contact_force or (stalled and distance < 0.012)))
 
         if distance > tol and not force_contact:
             # slow near contact, and while the heavier package hangs on the tool
             if self.task_state == 'DESCEND_ORE':
-                max_linear = 0.030
+                # fast down to just above the item, then slow for a gentle contact
+                max_linear = descend_fast_mps if distance > descend_slow_zone else 0.030
             elif is_package and self.task_state in ('LIFT_ORE', 'TRANSIT', 'HOVER_CONTAINER', 'LOWER_CONTAINER'):
                 max_linear = package_max_linear
             else:
@@ -721,12 +761,10 @@ class arm_waypoints(Node):
                 self.state_start_time = None
                 self.task_state = 'GRIP_ORE'
             elif self.task_state == 'LIFT_ORE':
-                # a package that did not come up with the tool is gripped again
-                if is_package and self.tool_force < package_held_force:
-                    self.get_logger().warn(
-                        f"Package not held (force={self.tool_force:.2f} N); trying the grip again")
-                    self.call_magnet_service(False)
-                    self.task_state = 'APPROACH_HOVER'
+                # the force reads true only at rest, so the package's hold is checked standing still
+                if is_package:
+                    self.state_start_time = None
+                    self.task_state = 'CHECK_HOLD'
                     return
                 self.get_logger().info(f"Lifted {current_ore_name}, transiting to its drop...")
                 self.route = self.route_to_drop(current_ore_name)

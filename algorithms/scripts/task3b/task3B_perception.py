@@ -65,11 +65,11 @@ hsv_ranges = {
 }
 vanadinite_wrap_range = ((170, 235, 180), (179, 255, 255))
 
-TF_BELOW_TOP = 0.0381
-ORE_HALF_HEIGHT = 0.0381
+# Each ore's transform sits on the centre of its top face, the point detection is scored
+# against (within 0.05 m); at the cube's centre it would start 0.038 m off.
 EXPECTED_ORES = 4
 
-MIN_ORE_AREA = 150          # tightened to filter noise
+MIN_ORE_AREA = 60           # px; an ore at the conveyor's far end reads about 140 px, and the conveyor zone filters the noise
 MAX_ORE_AREA = 2500         # tightened to filter terrain
 # The conveyor, in base_link, where every ore starts (ore tops measured at z = -0.064,
 # y = -0.62 to -0.81, x = -0.25 to 0.05). A detection whose top is anywhere else, on a rock,
@@ -90,20 +90,21 @@ SHOW_WINDOW = True
 SAVE_CALIBRATION_FRAME = False
 
 # The ore package, detected on the eBot's deck from the depth image once the eBot is
-# waiting beside the arm. Its transform sits at the box's centre, half its height below
-# the top face, the same convention the ores use.
+# waiting beside the arm. Its transform sits on the centre of its top face, the point its
+# detection is scored against.
 package_frame = 'ore_package'
 ebot_frame = 'ebot_base_link'                 # the eBot's base, in the same TF tree as base_link
 at_arm_topic = '/ebot_at_arm'                 # True while the eBot waits beside the arm (task3B_planning.py)
 package_picked_topic = '/package_picked'      # True once the arm has the package (task3B_manipulation.py)
-PACKAGE_HALF_HEIGHT = 0.0381                  # m, half of the box's 76.2 mm height
 PACKAGE_SEARCH_RADIUS = 0.40                  # m, around the eBot's centre, in the ground plane
 # The eBot's top deck is the top of its tower, 0.675 m above ebot_base_link (collision box
 # 0.35 x 0.29 x 0.435 m centred 0.4575 m up), so the box's top face is about 0.751 m up.
 PACKAGE_MIN_ABOVE_BASE = 0.70                 # m above ebot_base_link: below this is the tower's own top
 PACKAGE_MAX_ABOVE_BASE = 0.82                 # m above ebot_base_link: above this is the arm, not the box
 PACKAGE_TOP_RANK = 100                        # the top face's height is the 100th-highest point, so up to 99 noisy readings above it are ignored
-PACKAGE_TOP_BAND = 0.030                      # m, points this close (above or below) to the top face's height count as on it
+PACKAGE_TOP_BELOW = 0.006                     # m below the top face's height a point may sit and still count as on it;
+                                              # more takes in the near side face and drags the centre 1-3 cm towards the camera
+PACKAGE_TOP_ABOVE = 0.010                     # m above it, for the depth noise
 PACKAGE_MIN_POINTS = 150                      # fewer top-face points than this is not the box
 PACKAGE_SAMPLES = 10                          # stable samples before the package position is frozen
 PACKAGE_FREEZE_SPREAD = 0.020                 # m, largest spread among those samples
@@ -163,7 +164,8 @@ def detect_ores(image):
 
         candidates.sort(key=cv2.contourArea, reverse=True)
 
-        for cnt in candidates[:2]:  # Allow up to 2 ores of each type (e.g. malachite_ore_1 and malachite_ore_2)
+        # every candidate is returned, largest first: the node keeps those on the conveyor, two of each kind at most
+        for cnt in candidates:
             M = cv2.moments(cnt)
             if M['m00'] == 0:
                 continue
@@ -390,7 +392,7 @@ class ore_tf(Node):
         Returns:
         '''
         buf = self.ore_samples.setdefault(name, deque(maxlen=SAMPLES_PER_ORE))
-        buf.append((top.x, top.y, top.z - ORE_HALF_HEIGHT))
+        buf.append((top.x, top.y, top.z))
 
     def _broadcast_ores(self):
         '''
@@ -488,12 +490,13 @@ class ore_tf(Node):
         heights = base_points[..., 2][near]
         rank = min(PACKAGE_TOP_RANK, heights.size)
         top_z = np.partition(heights, -rank)[-rank]
-        top = near & (np.abs(base_points[..., 2] - top_z) < PACKAGE_TOP_BAND)
+        top = near & (base_points[..., 2] > top_z - PACKAGE_TOP_BELOW) & (base_points[..., 2] < top_z + PACKAGE_TOP_ABOVE)
         if np.count_nonzero(top) < PACKAGE_MIN_POINTS:
             return None
 
         centre = np.median(base_points[top], axis=0)
-        self.package_samples.append((centre[0], centre[1], centre[2] - PACKAGE_HALF_HEIGHT))
+        # the transform sits on the centre of the top face, the point detection is scored against
+        self.package_samples.append((centre[0], centre[1], centre[2]))
         self.package_attempts += 1
 
         samples = np.array(self.package_samples)

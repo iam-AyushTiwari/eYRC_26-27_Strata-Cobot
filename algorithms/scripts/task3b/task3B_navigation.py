@@ -81,6 +81,9 @@ LOOKAHEAD = 0.50            # m, how far ahead along the path the eBot aims
 LINEAR_KP = 0.8
 ANGULAR_KP = 2
 MIN_TRACK_SPEED = 0.05      # m/s, so it never stalls just short of the end
+# Beyond this heading error the eBot turns on the spot before driving: driving while turning
+# swings its 0.62 x 0.49 m body wide, and leaving the arm it clipped the arena's west wall.
+HEADING_GATE = 0.5          # rad
 
 # The path is done when the eBot is this close to its last point, then it turns on the spot to the yaw the path ends with. The task guide allows 0.3 m and 0.15 rad.
 
@@ -90,7 +93,13 @@ YAW_KP = 1.5
 
 ROTATE_MAX = 0.4          # rad/s
 ROTATE_MIN = 0.15           # rad/s, below this a skid-steer base does not turn at all
-RESUME_DISTANCE = 0.25      # m, if the turn pushes it this far off the last point, drive back
+# A turn on the spot pivots about a point about 0.115 m behind base_link, so a big final turn
+# carries base_link up to 0.23 m off the goal (0.3 m allowed). After the turn the eBot drives
+# straight, forward or back, to take out the part of that error along its heading. It never
+# aims past the goal: overshooting the goal ran its body into the wall and a rock.
+SETTLE_TOL = 0.04           # m, along-heading error left once settled
+SETTLE_KP = 1.0             # m/s per metre of along-heading error
+SETTLE_MAX = 0.15           # m/s
 
 # The ore package rides loose on the deck, so speed changes are spread out over time
 # rather than stepped, to keep it from sliding off when the eBot starts, stops or turns.
@@ -131,7 +140,7 @@ class path_tracker:
         self.points = []            # the path, [(x, y), ...]
         self.final_yaw = 0.0        # the yaw the path ends with
         self.index = 0              # how far along the path the eBot has got
-        self.phase = 'IDLE'         # IDLE, TRACK, ROTATE or HOLD
+        self.phase = 'IDLE'         # IDLE, TRACK, ROTATE, SETTLE or HOLD
  
     def set_path(self, points, final_yaw):
         '''
@@ -170,11 +179,21 @@ class path_tracker:
         if self.phase == 'ROTATE':
             error = wrap_angle(self.final_yaw - yaw)
             if abs(error) <= FINAL_YAW_TOL:
-                self.phase = 'HOLD'
+                self.phase = 'SETTLE'
                 return 0.0, 0.0
             rate = max(ROTATE_MIN, min(ROTATE_MAX, YAW_KP * abs(error)))
             return 0.0, math.copysign(rate, error)
  
+        # SETTLE: straight forward or back onto the goal, holding the final yaw
+        if self.phase == 'SETTLE':
+            along = (last_x - x) * math.cos(yaw) + (last_y - y) * math.sin(yaw)
+            if abs(along) <= SETTLE_TOL:
+                self.phase = 'HOLD'
+                return 0.0, 0.0
+            linear = max(-SETTLE_MAX, min(SETTLE_MAX, SETTLE_KP * along))
+            linear = math.copysign(max(abs(linear), MIN_TRACK_SPEED), linear)
+            return linear, YAW_KP * wrap_angle(self.final_yaw - yaw)
+
         # TRACK: move the progress marker on while the next point is nearer than this one
         count = len(self.points)
         while (self.index + 1 < count and
@@ -204,6 +223,10 @@ class path_tracker:
         # to avoid stalling just short of the end
         if facing > 0.3:
             linear = max(linear, MIN_TRACK_SPEED)
+
+        # far off the heading, turn on the spot first so the body does not swing wide
+        if abs(heading_error) > HEADING_GATE:
+            linear = 0.0
 
         # angular velocity is proportional to the heading error
         angular = ANGULAR_KP * heading_error

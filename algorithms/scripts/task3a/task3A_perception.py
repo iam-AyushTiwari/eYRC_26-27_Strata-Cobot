@@ -68,7 +68,7 @@ TF_BELOW_TOP = 0.0381
 ORE_HALF_HEIGHT = 0.0381
 EXPECTED_ORES = 4
 
-MIN_ORE_AREA = 150          # tightened to filter noise
+MIN_ORE_AREA = 60           # px; an ore at the conveyor's far end reads about 140 px, and the conveyor zone filters the noise
 MAX_ORE_AREA = 2500         # tightened to filter terrain
 # The conveyor, in base_link, where every ore starts (ore tops measured at z = -0.064,
 # y = -0.62 to -0.81, x = -0.25 to 0.05). A detection whose top is anywhere else, on a rock,
@@ -87,13 +87,12 @@ SHOW_WINDOW = True
 SAVE_CALIBRATION_FRAME = False
 
 # The ore package, detected on the eBot's deck from the depth image once the eBot is
-# waiting beside the arm. Its transform sits at the box's centre, half its height below
-# the top face, the same convention the ores use.
+# waiting beside the arm. Its transform sits on the centre of its top face, the point its
+# detection is scored against.
 package_frame = 'ore_package'
 ebot_frame = 'ebot_base_link'                 # the eBot's base, in the same TF tree as base_link
 at_arm_topic = '/ebot_at_arm'                 # True while the eBot waits beside the arm (task3A_planning.py)
 package_picked_topic = '/package_picked'      # True once the arm has the package (task3A_manipulation.py)
-PACKAGE_HALF_HEIGHT = 0.0381                  # m, half of the box's 76.2 mm height
 PACKAGE_SEARCH_RADIUS = 0.40                  # m, around the eBot's centre, in the ground plane
 # The eBot's top deck is the top of its tower, 0.675 m above ebot_base_link (collision box
 # 0.35 x 0.29 x 0.435 m centred 0.4575 m up), so the box's top face is about 0.751 m up.
@@ -158,7 +157,8 @@ def detect_ores(image):
 
         candidates.sort(key=cv2.contourArea, reverse=True)
 
-        for cnt in candidates[:2]:  # Allow up to 2 ores of each type (e.g. malachite_ore_1 and malachite_ore_2)
+        # every candidate is returned, largest first: the node keeps those on the conveyor, two of each kind at most
+        for cnt in candidates:
             M = cv2.moments(cnt)
             if M['m00'] == 0:
                 continue
@@ -472,7 +472,8 @@ class ore_tf(Node):
             return None
 
         centre = np.median(base_points[top], axis=0)
-        self.package_samples.append((centre[0], centre[1], centre[2] - PACKAGE_HALF_HEIGHT))
+        # the transform sits on the centre of the top face, the point detection is scored against
+        self.package_samples.append((centre[0], centre[1], centre[2]))
 
         samples = np.array(self.package_samples)
         if len(samples) == PACKAGE_SAMPLES and np.ptp(samples, axis=0).max() <= PACKAGE_FREEZE_SPREAD:
